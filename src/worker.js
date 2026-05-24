@@ -4,12 +4,7 @@
 let cards = [];
 let userPreferences = {
   examFocus: 'step1', 
-  enabledServices: {
-    'Boards & Beyond': true,
-    'Pathoma': true,
-    'Sketchy Micro': true,
-    'Sketchy Pharm': true
-  }
+  enabledServices: {}
 };
 
 function detectDelimiter(text) {
@@ -70,6 +65,38 @@ function parseData(text) {
   return result;
 }
 
+// Normalizes and cleans raw AnKing tag abbreviations to readable names
+function cleanResourceName(raw) {
+  const resourceMap = {
+    'B&B': 'Boards & Beyond',
+    'SketchyMicro': 'Sketchy Micro',
+    'SketchyPharm': 'Sketchy Pharm',
+    'SketchyPath': 'Sketchy Pathology',
+    'SketchyAnatomy': 'Sketchy Anatomy',
+    'SketchyBiochem': 'Sketchy Biochem',
+    'SketchyBiostats/Epidemiology': 'Sketchy Biostats/Epidemiology',
+    'SketchyImmunology': 'Sketchy Immunology',
+    'SketchyPhysiology': 'Sketchy Physiology',
+    'DirtyMedicine': 'Dirty Medicine',
+    'FirstAid': 'First Aid',
+    'NinjaNerd': 'Ninja Nerd',
+    'DivineIntervention': 'Divine Intervention',
+    'SketchyFM': 'Sketchy Family Medicine',
+    'SketchyIM': 'Sketchy Internal Medicine',
+    'SketchyNeurology': 'Sketchy Neurology',
+    'SketchyOBGYN': 'Sketchy OBGYN',
+    'SketchyPeds': 'Sketchy Pediatrics',
+    'SketchyPsych': 'Sketchy Psychiatry',
+    'SketchySurgery': 'Sketchy Surgery',
+    'Low/HighYield': 'Low/High Yield',
+    'USMLERx': 'USMLE Rx',
+    'OME': 'OnlineMedEd',
+    'OME_banner': 'OnlineMedEd Banner',
+    'Resources_by_rotation': 'Resources by Rotation'
+  };
+  return resourceMap[raw] || raw;
+}
+
 self.onmessage = function(e) {
   const { type, payload } = e.data;
   
@@ -101,6 +128,10 @@ self.onmessage = function(e) {
         }
       }
       
+      // Dynamic scanning collectors
+      let discoveredStep1Resources = new Set();
+      let discoveredStep2Resources = new Set();
+      
       for (let i = 0; i < rows.length; i++) {
         const r = rows[i];
         if (r.length < 2 || (r[0] && typeof r[0] === 'string' && r[0].startsWith('#'))) continue; 
@@ -112,13 +143,42 @@ self.onmessage = function(e) {
           tags = r[r.length - 1] || ''; 
         }
 
+        // Parse individual tags to build dynamic list of resources available
+        const tagList = tags.split(' ');
+        tagList.forEach(t => {
+          if (!t) return;
+          const parts = t.split('::');
+          
+          const step1Idx = parts.findIndex(p => p.toLowerCase().includes('step1'));
+          if (step1Idx !== -1 && step1Idx + 1 < parts.length) {
+            let res = parts[step1Idx + 1].replace(/^#/, '');
+            if (res && !res.startsWith('^') && !res.startsWith('!') && res !== 'Subjects') {
+              discoveredStep1Resources.add(cleanResourceName(res));
+            }
+          }
+          
+          const step2Idx = parts.findIndex(p => p.toLowerCase().includes('step2'));
+          if (step2Idx !== -1 && step2Idx + 1 < parts.length) {
+            let res = parts[step2Idx + 1].replace(/^#/, '');
+            if (res && !res.startsWith('^') && !res.startsWith('!') && res !== 'Subjects') {
+              discoveredStep2Resources.add(cleanResourceName(res));
+            }
+          }
+        });
+
         cards.push({
           text: r[0] || '',
           extra: r[1] || '',
           tags: tags || ''
         });
       }
-      self.postMessage({ type: 'LOAD_COMPLETE', count: cards.length });
+
+      self.postMessage({ 
+        type: 'LOAD_COMPLETE', 
+        count: cards.length,
+        step1Resources: Array.from(discoveredStep1Resources).sort(),
+        step2Resources: Array.from(discoveredStep2Resources).sort()
+      });
     } catch (error) {
       self.postMessage({ type: 'ERROR', payload: error.message });
     }
@@ -173,59 +233,59 @@ self.onmessage = function(e) {
        const highestMatchCount = allMatches[0].matchCount;
        const topTier = allMatches.filter(m => m.matchCount === highestMatchCount);
        self.postMessage({ type: 'SEARCH_COMPLETE', results: topTier.slice(0, 50) });
-    } else {
-       self.postMessage({ type: 'SEARCH_COMPLETE', results: [] });
+      } else {
+         self.postMessage({ type: 'SEARCH_COMPLETE', results: [] });
+      }
     }
-  }
-  
-  else if (type === 'SEARCH_SYLLABUS') {
-    const { categories } = payload;
-    let syllabusResults = {};
+    
+    else if (type === 'SEARCH_SYLLABUS') {
+      const { categories } = payload;
+      let syllabusResults = {};
 
-    categories.forEach(cat => {
-      let catMatches = new Map();
+      categories.forEach(cat => {
+        let catMatches = new Map();
 
-      cat.searchQueries.forEach(query => {
-         const lowerConceptGroups = query.requiredConcepts.map(group => group.map(k => k.toLowerCase()));
-         
-         for (let i = 0; i < cards.length; i++) {
-            const c = cards[i];
-            
-            const hasStep1Tag = c.tags.toLowerCase().includes('step1');
-            const hasStep2Tag = c.tags.toLowerCase().includes('step2');
-            if (userPreferences.examFocus === 'step1' && !hasStep1Tag && hasStep2Tag) continue;
-            if (userPreferences.examFocus === 'step2' && !hasStep2Tag && hasStep1Tag) continue;
+        cat.searchQueries.forEach(query => {
+           const lowerConceptGroups = query.requiredConcepts.map(group => group.map(k => k.toLowerCase()));
+           
+           for (let i = 0; i < cards.length; i++) {
+              const c = cards[i];
+              
+              const hasStep1Tag = c.tags.toLowerCase().includes('step1');
+              const hasStep2Tag = c.tags.toLowerCase().includes('step2');
+              if (userPreferences.examFocus === 'step1' && !hasStep1Tag && hasStep2Tag) continue;
+              if (userPreferences.examFocus === 'step2' && !hasStep2Tag && hasStep1Tag) continue;
 
-            let matchCount = 0;
-            const searchPool = (c.text + " " + c.extra).toLowerCase();
+              let matchCount = 0;
+              const searchPool = (c.text + " " + c.extra).toLowerCase();
 
-            for (let j = 0; j < lowerConceptGroups.length; j++) {
-              let groupMatched = false;
-              const group = lowerConceptGroups[j];
-              for (let k = 0; k < group.length; k++) {
-                if (searchPool.includes(group[k])) {
-                  groupMatched = true;
-                  break;
+              for (let j = 0; j < lowerConceptGroups.length; j++) {
+                let groupMatched = false;
+                const group = lowerConceptGroups[j];
+                for (let k = 0; k < group.length; k++) {
+                  if (searchPool.includes(group[k])) {
+                    groupMatched = true;
+                    break;
+                  }
                 }
+                if (groupMatched) matchCount++;
               }
-              if (groupMatched) matchCount++;
-            }
 
-            if (matchCount === lowerConceptGroups.length && lowerConceptGroups.length > 0) {
-               if (!catMatches.has(c.text)) {
-                  catMatches.set(c.text, { card: c, score: 1 });
-               }
-            }
-         }
+              if (matchCount === lowerConceptGroups.length && lowerConceptGroups.length > 0) {
+                 if (!catMatches.has(c.text)) {
+                    catMatches.set(c.text, { card: c, score: 1 });
+                 }
+              }
+           }
+        });
+
+        syllabusResults[cat.name] = Array.from(catMatches.values()).slice(0, 40);
       });
 
-      syllabusResults[cat.name] = Array.from(catMatches.values()).slice(0, 40);
-    });
-
-    self.postMessage({ type: 'SEARCH_SYLLABUS_COMPLETE', results: syllabusResults });
-  }
-  
-  else if (type === 'CLEAR_CSV') {
-    cards = [];
-  }
-};
+      self.postMessage({ type: 'SEARCH_SYLLABUS_COMPLETE', results: syllabusResults });
+    }
+    
+    else if (type === 'CLEAR_CSV') {
+      cards = [];
+    }
+  };

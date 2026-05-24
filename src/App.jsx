@@ -3,10 +3,8 @@ import {
   Upload, Search, Video, BookOpen, Layers, 
   CheckCircle, Loader2, FileText, AlertCircle, PlayCircle,
   Sparkles, BrainCircuit, MessageSquare, X, AlignLeft, Trash2,
-  ChevronDown, ChevronUp, Settings, Sliders
+  ChevronDown, ChevronUp, Settings, Sliders, Key
 } from 'lucide-react';
-
-const apiKey = ""; // API key is injected by the environment at runtime
 
 // --- INDEXED DB SERVICES FOR OFFLINE STORAGE ---
 const initDB = () => {
@@ -62,19 +60,22 @@ export default function App() {
   const [cardCount, setCardCount] = useState(0);
   const [prompt, setPrompt] = useState('');
   
+  // Custom API Key and Settings State
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('anki_gemini_api_key') || "");
   const [showSettings, setShowSettings] = useState(false);
+  
+  // Dynamic resource sets loaded directly from card tags scanning
+  const [step1Resources, setStep1Resources] = useState([]);
+  const [step2Resources, setStep2Resources] = useState([]);
+  
   const [preferences, setPreferences] = useState({
     examFocus: 'step1', 
-    enabledServices: {
-      'Boards & Beyond': true,
-      'Pathoma': true,
-      'Sketchy Micro': true,
-      'Sketchy Pharm': true
-    },
+    enabledServices: {}, // Populated dynamically
     remoteDeckUrl: '' 
   });
   const [saveToast, setSaveToast] = useState(false);
   
+  // Search State
   const [searchStatus, setSearchStatus] = useState('idle'); 
   const [searchMode, setSearchMode] = useState('normal'); 
   const [results, setResults] = useState([]); 
@@ -121,6 +122,13 @@ export default function App() {
     setTimeout(() => setSaveToast(false), 2000);
   };
 
+  const handleSaveApiKey = (newKey) => {
+    setApiKey(newKey);
+    localStorage.setItem('anki_gemini_api_key', newKey);
+    setSaveToast(true);
+    setTimeout(() => setSaveToast(false), 2000);
+  };
+
   // Initialize Web Worker with correct production url paths
   useEffect(() => {
     const w = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
@@ -133,7 +141,31 @@ export default function App() {
         } else {
           setCsvStatus('ready');
           setCardCount(e.data.count);
+          setStep1Resources(e.data.step1Resources || []);
+          setStep2Resources(e.data.step2Resources || []);
           setErrorMsg('');
+          
+          // Auto-enable newly scanned services by default
+          const defaultEnabled = {};
+          const allRes = [...(e.data.step1Resources || []), ...(e.data.step2Resources || [])];
+          allRes.forEach(r => {
+            defaultEnabled[r] = true;
+          });
+          
+          const localPrefs = localStorage.getItem('anki_video_finder_prefs');
+          if (localPrefs) {
+            try {
+              const parsed = JSON.parse(localPrefs);
+              setPreferences(prev => ({
+                ...parsed,
+                enabledServices: { ...defaultEnabled, ...parsed.enabledServices }
+              }));
+            } catch(err) {
+              setPreferences(prev => ({ ...prev, enabledServices: defaultEnabled }));
+            }
+          } else {
+            setPreferences(prev => ({ ...prev, enabledServices: defaultEnabled }));
+          }
         }
       } else if (e.data.type === 'SEARCH_COMPLETE') {
         processWorkerResults(e.data.results);
@@ -224,6 +256,8 @@ export default function App() {
     }
     setCsvStatus('idle');
     setCardCount(0);
+    setStep1Resources([]);
+    setStep2Resources([]);
     setResults([]);
     setSyllabusResults({});
     setSyllabusVideoSummaries({});
@@ -237,6 +271,9 @@ export default function App() {
   };
 
   const callGeminiJSON = async (systemInstruction, userPrompt, schema) => {
+    if (!apiKey) {
+      throw new Error("Missing Gemini API Key. Please add your key in Settings.");
+    }
     const delays = [1000, 2000, 4000, 8000, 16000];
     const payload = {
       contents: [{ parts: [{ text: userPrompt }] }],
@@ -246,7 +283,8 @@ export default function App() {
 
     for (let i = 0; i < 6; i++) {
       try {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+        // Updated to use the stable production gemini-2.5-flash model endpoint!
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -262,6 +300,9 @@ export default function App() {
   };
 
   const callGeminiText = async (systemInstruction, userPrompt) => {
+    if (!apiKey) {
+      throw new Error("Missing Gemini API Key. Please add your key in Settings.");
+    }
     const delays = [1000, 2000, 4000, 8000, 16000];
     const payload = {
       contents: [{ parts: [{ text: userPrompt }] }],
@@ -270,7 +311,8 @@ export default function App() {
 
     for (let i = 0; i < 6; i++) {
       try {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+        // Updated to use the stable production gemini-2.5-flash model endpoint!
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -387,56 +429,33 @@ export default function App() {
   };
 
   const generateVideoSummaryData = (flatFormattedCards) => {
-    const counts = {
-      'Boards & Beyond': {},
-      'Pathoma': {},
-      'Sketchy Micro': {},
-      'Sketchy Pharm': {}
-    };
+    const counts = {};
 
     flatFormattedCards.forEach(item => {
-      if (preferences.enabledServices['Boards & Beyond']) {
-        item.extractedVideos['B&B'].forEach(v => {
-          counts['Boards & Beyond'][v] = (counts['Boards & Beyond'][v] || 0) + 1;
-        });
-      }
-      if (preferences.enabledServices['Pathoma']) {
-        item.extractedVideos['Pathoma'].forEach(v => {
-          counts['Pathoma'][v] = (counts['Pathoma'][v] || 0) + 1;
-        });
-      }
-      if (preferences.enabledServices['Sketchy Micro']) {
-        item.extractedVideos['Sketchy Micro'].forEach(v => {
-          counts['Sketchy Micro'][v] = (counts['Sketchy Micro'][v] || 0) + 1;
-        });
-      }
-      if (preferences.enabledServices['Sketchy Pharm']) {
-        item.extractedVideos['Sketchy Pharm'].forEach(v => {
-          counts['Sketchy Pharm'][v] = (counts['Sketchy Pharm'][v] || 0) + 1;
-        });
-      }
+      Object.entries(item.extractedVideos).forEach(([resourceName, videosList]) => {
+        // Strict dynamically scanned enabled resource validation
+        if (preferences.enabledServices[resourceName] !== false) {
+          if (!counts[resourceName]) {
+            counts[resourceName] = {};
+          }
+          videosList.forEach(v => {
+            counts[resourceName][v] = (counts[resourceName][v] || 0) + 1;
+          });
+        }
+      });
     });
 
-    const sortCounts = (obj) => {
-      const sorted = Object.entries(obj)
+    const summary = {};
+    Object.entries(counts).forEach(([resourceName, videoMap]) => {
+      const sorted = Object.entries(videoMap)
         .map(([name, count]) => ({ name, count }))
         .sort((a, b) => b.count - a.count); 
         
       const filtered = sorted.filter(item => item.count >= 5);
-      
-      if (filtered.length < 3) {
-        return sorted.slice(0, 3);
-      }
-      
-      return filtered;
-    };
+      summary[resourceName] = filtered.length < 3 ? sorted.slice(0, 3) : filtered;
+    });
 
-    return {
-      'Boards & Beyond': sortCounts(counts['Boards & Beyond']),
-      'Pathoma': sortCounts(counts['Pathoma']),
-      'Sketchy Micro': sortCounts(counts['Sketchy Micro']),
-      'Sketchy Pharm': sortCounts(counts['Sketchy Pharm'])
-    };
+    return summary;
   };
 
   const processWorkerResults = (searchResults) => {
@@ -482,31 +501,61 @@ export default function App() {
 
   const parseTagsForVideos = (tagsStr) => {
     const tags = tagsStr.split(' ');
-    const videos = { 'B&B': [], 'Pathoma': [], 'Sketchy Micro': [], 'Sketchy Pharm': [] };
+    const videos = {};
 
     tags.forEach(t => {
       if (!t) return;
-      const tLower = t.toLowerCase();
+      const parts = t.split('::');
       
-      if (tLower.includes('step2')) return;
-      
-      let category = null;
+      const stepIdx = parts.findIndex(p => p.toLowerCase().includes('step1') || p.toLowerCase().includes('step2'));
+      if (stepIdx !== -1 && stepIdx + 1 < parts.length) {
+        let resourceRaw = parts[stepIdx + 1].replace(/^#/, '');
+        
+        if (!resourceRaw || resourceRaw.startsWith('^') || resourceRaw.startsWith('!') || resourceRaw === 'Subjects' || resourceRaw === 'Resources_by_rotation') {
+          return;
+        }
 
-      if (tLower.includes('b&b')) category = 'B&B';
-      else if (tLower.includes('pathoma')) category = 'Pathoma';
-      else if (tLower.includes('sketchy') && tLower.includes('micro')) category = 'Sketchy Micro';
-      else if (tLower.includes('sketchy') && tLower.includes('pharm')) category = 'Sketchy Pharm';
+        const resourceMap = {
+          'B&B': 'Boards & Beyond',
+          'SketchyMicro': 'Sketchy Micro',
+          'SketchyPharm': 'Sketchy Pharm',
+          'SketchyPath': 'Sketchy Pathology',
+          'SketchyAnatomy': 'Sketchy Anatomy',
+          'SketchyBiochem': 'Sketchy Biochem',
+          'SketchyBiostats/Epidemiology': 'Sketchy Biostats/Epidemiology',
+          'SketchyImmunology': 'Sketchy Immunology',
+          'SketchyPhysiology': 'Sketchy Physiology',
+          'DirtyMedicine': 'Dirty Medicine',
+          'FirstAid': 'First Aid',
+          'NinjaNerd': 'Ninja Nerd',
+          'DivineIntervention': 'Divine Intervention',
+          'SketchyFM': 'Sketchy Family Medicine',
+          'SketchyIM': 'Sketchy Internal Medicine',
+          'SketchyNeurology': 'Sketchy Neurology',
+          'SketchyOBGYN': 'Sketchy OBGYN',
+          'SketchyPeds': 'Sketchy Pediatrics',
+          'SketchyPsych': 'Sketchy Psychiatry',
+          'SketchySurgery': 'Sketchy Surgery',
+          'Low/HighYield': 'Low/High Yield',
+          'USMLERx': 'USMLE Rx',
+          'OME': 'OnlineMedEd',
+          'OME_banner': 'OnlineMedEd Banner',
+          'Resources_by_rotation': 'Resources by Rotation'
+        };
 
-      if (category) {
-        let parts = t.split('::').map(p => p.replace(/^#/, '').replace(/_/g, ' '));
-        parts = parts.filter(p => 
-          !p.match(/AK Step/i) && !p.match(/AK Other/i) && 
-          !p.match(/^B&B$/i) && !p.match(/^Pathoma$/i) && 
-          !p.match(/^Sketchy.*$/i) && !p.match(/^Subjects$/i)
-        );
-        const cleanName = parts.join(' > ');
-        if (cleanName && !videos[category].includes(cleanName)) {
-          videos[category].push(cleanName);
+        const cleanResourceName = resourceMap[resourceRaw] || resourceRaw;
+
+        let videoPathParts = parts.slice(stepIdx + 2).map(p => p.replace(/^#/, '').replace(/_/g, ' '));
+        videoPathParts = videoPathParts.filter(p => p && !p.match(/AK Step/i) && !p.match(/AK Other/i));
+        
+        const cleanVideoName = videoPathParts.join(' > ');
+        if (cleanVideoName) {
+          if (!videos[cleanResourceName]) {
+            videos[cleanResourceName] = [];
+          }
+          if (!videos[cleanResourceName].includes(cleanVideoName)) {
+            videos[cleanResourceName].push(cleanVideoName);
+          }
         }
       }
     });
@@ -588,11 +637,11 @@ export default function App() {
       />
       
       <div className="flex flex-wrap gap-2 mt-2">
-        {['B&B', 'Pathoma', 'Sketchy Micro', 'Sketchy Pharm'].map(category => {
+        {Object.keys(item.extractedVideos).map(category => {
           const vids = item.extractedVideos[category];
-          if (!vids || vids.length === 0) return null;
+          if (!vids || vids.length === 0 || preferences.enabledServices[category] === false) return null;
           return vids.map((vid, i) => (
-            <span key={`${category}-${i}`} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">
+            <span key={`${category}-${i}`} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200 animate-fade-in">
               <Video className="w-3 h-3 text-slate-400" />
               <span className="font-semibold text-slate-900 ml-1">{category}:</span> {vid}
             </span>
@@ -614,7 +663,7 @@ export default function App() {
       </div>
       
       {cardExplanations[index] && cardExplanations[index].status === 'complete' && (
-        <div className="mt-4 p-4 bg-violet-50 rounded-lg border border-violet-100 text-sm text-slate-700">
+        <div className="mt-4 p-4 bg-violet-50 rounded-lg border border-violet-100 text-sm text-slate-700 animate-slide-down">
           <div className="font-bold text-violet-900 flex items-center gap-1.5 mb-2">
             <Sparkles className="w-4 h-4" /> AI Explanation
           </div>
@@ -689,7 +738,7 @@ export default function App() {
           </button>
         )}
         {(!title || isOpen) && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-fade-in">
             {Object.entries(summaryData).map(([category, vids]) => {
               if (vids.length === 0) return null;
               return (
@@ -729,7 +778,7 @@ export default function App() {
           {isOpen ? <ChevronUp className="w-4 h-4 text-blue-400" /> : <ChevronDown className="w-4 h-4 text-blue-400" />}
         </div>
         {isOpen && (
-          <div className="px-4 pb-4">
+          <div className="px-4 pb-4 animate-fade-in">
             {children}
           </div>
         )}
@@ -737,55 +786,24 @@ export default function App() {
     );
   };
 
-  const SectionCard = ({ title, icon: Icon, badgeText, theme = 'slate', defaultOpen = true, headerRight, children }) => {
-    const [isOpen, setIsOpen] = useState(defaultOpen);
-
-    const themes = {
-      indigo: { bg: 'bg-indigo-50', text: 'text-indigo-900', icon: 'text-indigo-600', chevron: 'text-indigo-400' },
-      slate: { bg: 'bg-slate-50/50', text: 'text-slate-800', icon: 'text-slate-600', chevron: 'text-slate-400' }
-    };
-
-    const t = themes[theme] || themes.slate;
-
-    return (
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 mb-6 overflow-hidden">
-        <div 
-          onClick={() => setIsOpen(!isOpen)}
-          className={`${t.bg} border-b border-slate-200 px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 cursor-pointer transition-colors hover:bg-slate-100/50`}
-        >
-          <div className="flex items-center gap-2 select-none">
-            <Icon className={`w-5 h-5 ${t.icon}`} />
-            <h2 className={`text-lg font-bold ${t.text}`}>
-              {title} {badgeText && <span className="text-sm font-normal opacity-70 ml-1">({badgeText})</span>}
-            </h2>
-            {isOpen ? <ChevronUp className={`w-5 h-5 ml-1 ${t.chevron}`} /> : <ChevronDown className={`w-5 h-5 ml-1 ${t.chevron}`} />}
-          </div>
-          {headerRight && (
-            <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
-              {headerRight}
-            </div>
-          )}
-        </div>
-        {isOpen && (
-           <div className="bg-white">
-              {children}
-           </div>
-        )}
-      </div>
-    );
+  // Get list of enabled resources based on current exam scope focus
+  const getActiveSettingResources = () => {
+    if (preferences.examFocus === 'step1') return step1Resources;
+    if (preferences.examFocus === 'step2') return step2Resources;
+    return Array.from(new Set([...step1Resources, ...step2Resources])).sort();
   };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans relative pb-10">
       
-      {/* Cloud/Local Sync Notification Toast */}
+      {/* Configuration Status Toast Notification */}
       {saveToast && (
         <div className="fixed bottom-5 right-5 z-50 bg-slate-900 text-white py-3 px-5 rounded-xl shadow-lg border border-slate-800 flex items-center gap-2 animate-bounce">
-          <span className="text-sm font-semibold">Preferences Updated Locally!</span>
+          <span className="text-sm font-semibold">Settings Saved Locally!</span>
         </div>
       )}
 
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="bg-indigo-600 p-2 rounded-lg text-white">
@@ -799,7 +817,7 @@ export default function App() {
           <div className="flex items-center gap-4">
             <button
               onClick={() => setShowSettings(true)}
-              className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 py-1.5 px-3 rounded-lg border border-slate-200 font-medium text-sm transition-all"
+              className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 py-1.5 px-3 rounded-lg border border-slate-200 font-medium text-sm transition-all shadow-sm"
             >
               <Settings className="w-4 h-4 text-slate-500" />
               Settings
@@ -809,13 +827,13 @@ export default function App() {
               {csvStatus === 'ready' && (
                 <div className="flex items-center gap-2">
                   <span className="flex items-center gap-2 text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
-                    <CheckCircle className="w-4 h-4" /> {cardCount.toLocaleString()} Cards loaded
+                    <CheckCircle className="w-4 h-4" /> {cardCount.toLocaleString()} Cards
                   </span>
                 </div>
               )}
               {csvStatus === 'loading' && (
-                <span className="text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full border border-indigo-200 flex items-center gap-1.5">
-                  <Loader2 className="w-4 h-4 animate-spin" /> Fetching database...
+                <span className="text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full border border-indigo-200 flex items-center gap-1.5 shadow-sm">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Synchronizing dataset...
                 </span>
               )}
             </div>
@@ -824,33 +842,63 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        
+        {/* API Key Global Banner Warning */}
+        {!apiKey && (
+          <div className="bg-amber-50 border-2 border-amber-200 rounded-xl p-4 mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm animate-pulse">
+            <div className="flex items-center gap-3">
+              <Key className="w-8 h-8 text-amber-500 shrink-0" />
+              <div>
+                <h4 className="font-bold text-amber-900 text-sm">Gemini API Key Required</h4>
+                <p className="text-xs text-amber-700">AI features (syllabus parsing, summaries, pre-test quizzes) require an API key to run.</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <a 
+                href="https://aistudio.google.com/" 
+                target="_blank" 
+                rel="noreferrer" 
+                className="text-xs font-semibold bg-white text-amber-800 border border-amber-300 px-3 py-2 rounded-lg hover:bg-amber-100/50 transition-colors"
+              >
+                Get Free Key ↗
+              </a>
+              <button 
+                onClick={() => setShowSettings(true)}
+                className="text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg shadow-sm transition-colors"
+              >
+                Add Key in Settings
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           
           {/* Controls Column */}
           <div className="lg:col-span-4 space-y-6">
             
-            {/* Active Configurations Info */}
+            {/* Active Configurations Summary */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
               <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">
-                Active Filters
+                Active Configurations
               </h2>
               <div className="space-y-3">
                 <div className="flex justify-between text-sm border-b pb-2 border-slate-100">
-                  <span className="text-slate-500">Exam Scope:</span>
+                  <span className="text-slate-500">Exam Scope Focus:</span>
                   <span className="font-bold text-indigo-600 capitalize">
                     {preferences.examFocus === 'both' ? 'Step 1 & 2' : preferences.examFocus}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm border-b pb-2 border-slate-100">
-                  <span className="text-slate-500">Video Services:</span>
+                  <span className="text-slate-500">Active Resources:</span>
                   <span className="font-bold text-indigo-600">
-                    {Object.entries(preferences.enabledServices).filter(([_, v]) => v).length} Enabled
+                    {Object.entries(preferences.enabledServices).filter(([k, v]) => v && getActiveSettingResources().includes(k)).length} Enabled
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-500">Source Type:</span>
                   <span className="font-bold text-indigo-600 truncate max-w-[150px]">
-                    {preferences.remoteDeckUrl ? 'Cloud (GitHub)' : 'Local cache'}
+                    {preferences.remoteDeckUrl ? 'Cloud Connection' : 'Local cache'}
                   </span>
                 </div>
               </div>
@@ -861,7 +909,7 @@ export default function App() {
               <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4">
                 Find Resources
               </h2>
-              <p className="text-sm text-slate-600 mb-3">
+              <p className="text-sm text-slate-600 mb-3 leading-relaxed">
                 Enter normal text (e.g., hyperkalemia ECG) or paste raw syllabus learning objectives in <strong>"quotation marks"</strong> to parse categories automatically.
               </p>
               <textarea
@@ -875,7 +923,7 @@ export default function App() {
               <button
                 onClick={handleSearch}
                 disabled={csvStatus !== 'ready' || !prompt.trim() || searchStatus === 'extracting' || searchStatus === 'searching'}
-                className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm"
+                className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm"
               >
                 {searchStatus === 'extracting' ? (
                   <><Loader2 className="w-5 h-5 animate-spin" /> Structuring search terms...</>
@@ -888,7 +936,7 @@ export default function App() {
 
               {searchStatus === 'error' && errorMsg && (
                 <div className="mt-4 p-3 bg-red-50 text-red-700 text-sm rounded-lg flex items-start gap-2 border border-red-200">
-                  <p>{errorMsg}</p>
+                  <p className="font-medium">{errorMsg}</p>
                 </div>
               )}
             </div>
@@ -899,8 +947,9 @@ export default function App() {
             
             {searchStatus === 'idle' && results.length === 0 && (
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-12 text-center text-slate-500">
+                <BookOpen className="w-12 h-12 text-slate-300 mx-auto mb-4" />
                 <h3 className="text-lg font-medium text-slate-900 mb-1">No Search Query Run</h3>
-                <p className="text-sm">Connect a remote AnKing deck in "Settings" or upload your CSV locally to get started.</p>
+                <p className="text-sm">Connect a remote Anki deck in "Settings" or upload your CSV locally to get started.</p>
               </div>
             )}
 
@@ -962,14 +1011,14 @@ export default function App() {
                       <button 
                         onClick={handleGenerateSummary}
                         disabled={summaryStatus === 'loading'}
-                        className="text-xs sm:text-sm font-medium bg-white text-indigo-700 border border-indigo-200 px-3 py-2 rounded-lg hover:bg-indigo-50 transition-colors flex items-center gap-1.5 shadow-sm"
+                        className="text-xs sm:text-sm font-semibold bg-white text-indigo-700 border border-indigo-200 px-3 py-2 rounded-lg hover:bg-indigo-50 transition-colors flex items-center gap-1.5 shadow-sm"
                       >
                         {summaryStatus === 'loading' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                         ✨ AI Summary
                       </button>
                       <button 
                         onClick={handleGenerateQuiz}
-                        className="text-xs sm:text-sm font-medium bg-indigo-600 text-white border border-indigo-600 px-3 py-2 rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-1.5 shadow-sm"
+                        className="text-xs sm:text-sm font-semibold bg-indigo-600 text-white border border-indigo-600 px-3 py-2 rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-1.5 shadow-sm"
                       >
                         <BrainCircuit className="w-4 h-4" />
                         ✨ Pre-test Quiz
@@ -1003,7 +1052,7 @@ export default function App() {
                       setSelectedVideoFilter={setSelectedVideoFilter} 
                     />
                   ) : (
-                    <div className="divide-y divide-slate-100">
+                    <div className="divide-y divide-slate-100 animate-fade-in">
                       <CollapsibleSection 
                         summaryData={videoSummary} 
                         title="Aggregate (All Categories)" 
@@ -1095,14 +1144,14 @@ export default function App() {
         </div>
       </main>
 
-      {/* Configuration Settings Modal */}
+      {/* Configuration Settings Panel Modal */}
       {showSettings && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-end">
-          <div className="bg-white w-full max-w-lg h-full p-6 flex flex-col justify-between shadow-2xl relative">
-            <div>
+          <div className="bg-white w-full max-w-lg h-full p-6 flex flex-col justify-between shadow-2xl relative animate-slide-left">
+            <div className="overflow-y-auto pr-2 flex-1">
               <div className="flex items-center justify-between border-b pb-4 border-slate-200 mb-6">
                 <h2 className="text-xl font-extrabold text-slate-800 flex items-center gap-2">
-                  <Settings className="w-5 h-5 text-indigo-600" /> App Configurations
+                  <Settings className="w-5 h-5 text-indigo-600" /> Configurations Settings
                 </h2>
                 <button 
                   onClick={() => setShowSettings(false)}
@@ -1113,6 +1162,24 @@ export default function App() {
               </div>
 
               <div className="space-y-6">
+                
+                {/* Secure API Key input */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+                    <Key className="w-3.5 h-3.5 text-indigo-500" /> Gemini API Developer Key
+                  </label>
+                  <input 
+                    type="password"
+                    placeholder="Paste AI API key here..."
+                    value={apiKey}
+                    onChange={(e) => handleSaveApiKey(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white outline-none text-slate-700 font-mono shadow-inner"
+                  />
+                  <span className="text-[10px] text-slate-400 leading-tight block mt-1.5">
+                    Your key is stored 100% locally on your browser and is never sent to any third party server other than Google's secure APIs.
+                  </span>
+                </div>
+
                 {/* Exam relevance toggle */}
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
@@ -1135,36 +1202,46 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Enable Resource Services */}
+                {/* Enable Scanned Resource Services (Dynamically Populated) */}
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-                    Enabled Video Resources
+                    Filter Video Resources ({getActiveSettingResources().length} Scanned)
                   </label>
-                  <div className="space-y-2">
-                    {Object.keys(preferences.enabledServices).map((service) => (
-                      <label 
-                        key={service}
-                        className="flex items-center gap-3 p-3 rounded-lg border border-slate-100 bg-slate-50 hover:bg-slate-100 cursor-pointer transition-colors"
-                      >
-                        <input 
-                          type="checkbox"
-                          checked={preferences.enabledServices[service]}
-                          onChange={() => {
-                            const updatedServices = { ...preferences.enabledServices, [service]: !preferences.enabledServices[service] };
-                            savePreferencesLocally({ ...preferences, enabledServices: updatedServices });
-                          }}
-                          className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4"
-                        />
-                        <span className="text-sm font-medium text-slate-700">{service}</span>
-                      </label>
-                    ))}
-                  </div>
+                  
+                  {getActiveSettingResources().length === 0 ? (
+                    <div className="p-4 rounded-lg bg-slate-50 text-xs text-slate-400 italic text-center border">
+                      Upload your Anki CSV database first to dynamically populate and filter video resources.
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1 border border-slate-100 rounded-lg p-2 bg-slate-50/50">
+                      {getActiveSettingResources().map((service) => (
+                        <label 
+                          key={service}
+                          className="flex items-center gap-3 p-2 rounded-md hover:bg-slate-100 cursor-pointer transition-colors text-xs font-medium text-slate-700"
+                        >
+                          <input 
+                            type="checkbox"
+                            checked={preferences.enabledServices[service] !== false}
+                            onChange={() => {
+                              const updatedServices = { 
+                                ...preferences.enabledServices, 
+                                [service]: preferences.enabledServices[service] === false ? true : false 
+                              };
+                              savePreferencesLocally({ ...preferences, enabledServices: updatedServices });
+                            }}
+                            className="rounded text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5"
+                          />
+                          <span>{service}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* Remote Deck URL sync */}
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-                    Remote Deck Gist URL
+                    Remote Deck GitHub URL
                   </label>
                   <div className="flex gap-2">
                     <input 
@@ -1179,7 +1256,7 @@ export default function App() {
                         savePreferencesLocally(preferences);
                         fetchRemoteDeck(preferences.remoteDeckUrl);
                       }}
-                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-bold shrink-0 transition-colors"
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-bold shrink-0 transition-all shadow-sm"
                     >
                       Sync Deck
                     </button>
@@ -1201,11 +1278,17 @@ export default function App() {
                     />
                     <span className="text-xs font-semibold text-slate-700 block">Select CSV / TSV File</span>
                   </div>
+                  <button 
+                    onClick={handleClearData}
+                    className="mt-3 w-full border border-red-200 hover:bg-red-50 text-red-600 text-xs font-semibold py-2 rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Reset Local Cache Database
+                  </button>
                 </div>
               </div>
             </div>
 
-            <div className="border-t pt-4 border-slate-200 flex justify-between text-[11px] text-slate-400 font-medium">
+            <div className="border-t pt-4 border-slate-200 flex justify-between text-[11px] text-slate-400 font-medium shrink-0 mt-4">
               <span>Standard Offline Mode Active</span>
               <span>Data stored locally</span>
             </div>
@@ -1216,10 +1299,10 @@ export default function App() {
       {/* AI Quiz Modal */}
       {showQuizModal && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden animate-slide-up">
             <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-indigo-50">
               <h2 className="text-xl font-bold text-indigo-900 flex items-center gap-2">
-                AI Mini-Quiz
+                <BrainCircuit className="w-5 h-5 text-indigo-600" /> AI Mini-Quiz
               </h2>
               <button 
                 onClick={() => setShowQuizModal(false)}
@@ -1291,3 +1374,38 @@ export default function App() {
     </div>
   );
 }
+
+// --- GENERIC SECTION CARD COMPONENT ---
+const SectionCard = ({ title, icon: Icon, badgeText, theme = 'slate', defaultOpen = true, headerRight, children }) => {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  const themes = {
+    indigo: { bg: 'bg-indigo-50', text: 'text-indigo-900', icon: 'text-indigo-600', chevron: 'text-indigo-400' },
+    slate: { bg: 'bg-slate-50/50', text: 'text-slate-800', icon: 'text-slate-600', chevron: 'text-slate-400' }
+  };
+
+  const t = themes[theme] || themes.slate;
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 mb-6 overflow-hidden">
+      <div 
+        onClick={() => setIsOpen(!isOpen)}
+        className={`${t.bg} border-b border-slate-200 px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 cursor-pointer transition-colors hover:bg-slate-100/50`}
+      >
+        <div className="flex items-center gap-2 select-none">
+          <Icon className={`w-5 h-5 ${t.icon}`} />
+          <h2 className={`text-lg font-bold ${t.text}`}>
+            {title} {badgeText && <span className="text-sm font-normal opacity-70 ml-1">({badgeText})</span>}
+          </h2>
+          {isOpen ? <ChevronUp className={`w-5 h-5 ml-1 ${t.chevron}`} /> : <ChevronDown className={`w-5 h-5 ml-1 ${t.chevron}`} />}
+        </div>
+        {headerRight && (
+          <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+            {headerRight}
+          </div>
+        )}
+      </div>
+      {isOpen && <div className="bg-white">{children}</div>}
+    </div>
+  );
+};
