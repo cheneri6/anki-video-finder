@@ -3,8 +3,11 @@ import {
   Search, Video, BookOpen, Layers, 
   CheckCircle, Loader2, PlayCircle,
   Sparkles, BrainCircuit, MessageSquare, X, AlignLeft, Trash2,
-  ChevronDown, ChevronUp, Settings, Sliders, Key, HelpCircle
+  ChevronDown, ChevronUp, Settings, Sliders, Key, HelpCircle, Filter, CheckSquare, Square
 } from 'lucide-react';
+
+// Import Web Worker natively using Vite query suffix to prevent target esbuild compilation issues
+import AppWorker from './worker?worker';
 
 const DEFAULT_DECK_URL = "https://raw.githubusercontent.com/cheneri6/anki-database/refs/heads/main/AnKing_Step_Deck.csv";
 
@@ -74,7 +77,8 @@ export default function App() {
   const [preferences, setPreferences] = useState({
     examFocus: 'step1', 
     enabledServices: {}, // Populated dynamically during deck upload
-    remoteDeckUrl: DEFAULT_DECK_URL 
+    remoteDeckUrl: DEFAULT_DECK_URL,
+    showYieldTags: true // Yield Display Toggles
   });
   const [saveToast, setSaveToast] = useState(false);
   
@@ -87,7 +91,10 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState('');
   const [extractedConcepts, setExtractedConcepts] = useState([]); 
   const [extractedSyllabus, setExtractedSyllabus] = useState(null); 
-  const [selectedVideoFilter, setSelectedVideoFilter] = useState(null); 
+  
+  // MULTI-SELECT ARRAY AND EXPLICIT SECTION ACCORDION CONTROLS (Prevents layout shifting)
+  const [selectedVideoFilters, setSelectedVideoFilters] = useState([]); 
+  const [isSyllabusLogicExpanded, setIsSyllabusLogicExpanded] = useState(true);
 
   // AI Features State
   const [summaryStatus, setSummaryStatus] = useState('idle');
@@ -106,9 +113,11 @@ export default function App() {
     if (localPrefs) {
       try {
         const parsed = JSON.parse(localPrefs);
-        // Default URL safety check
         if (!parsed.remoteDeckUrl || parsed.remoteDeckUrl.includes('default-app-id') || parsed.remoteDeckUrl.includes('anki-video-finder')) {
           parsed.remoteDeckUrl = DEFAULT_DECK_URL;
+        }
+        if (parsed.showYieldTags === undefined) {
+          parsed.showYieldTags = true;
         }
         setPreferences(parsed);
       } catch(e) {
@@ -136,7 +145,7 @@ export default function App() {
 
   // Initialize Web Worker
   useEffect(() => {
-    const w = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+    const w = new AppWorker();
     
     w.onmessage = (e) => {
       if (e.data.type === 'LOAD_COMPLETE') {
@@ -150,28 +159,28 @@ export default function App() {
           setStep2Resources(e.data.step2Resources || []);
           setErrorMsg('');
           
-          // Determine existing local preferences to merge properly
           const localPrefs = localStorage.getItem('anki_video_finder_prefs');
           let parsedPrefs = {};
           if (localPrefs) {
             try {
               parsedPrefs = JSON.parse(localPrefs);
             } catch (err) {
-              console.error("Stale preferences parsing error:", err);
+              console.error(err);
             }
           }
 
-          // Build fresh dynamic resource services lists
           const dynamicServices = {};
           const allRes = [...(e.data.step1Resources || []), ...(e.data.step2Resources || [])];
           
           const corePriorities = [
             'Boards & Beyond', 'Pathoma', 'Sketchy Micro', 'Sketchy Pharm', 
-            'Sketchy Pathology', 'First Aid', 'Costanzo', 'Bootcamp', 'Low/High Yield'
+            'Sketchy Pathology', 'First Aid', 'Costanzo', 'Bootcamp'
           ];
 
           allRes.forEach(r => {
-            // Respect already stored user checkbox choices, otherwise default based on priority
+            // Filter Low/High Yield completely out from general checklists
+            if (r === 'Low/High Yield' || r === 'Low/HighYield') return;
+
             if (parsedPrefs.enabledServices && parsedPrefs.enabledServices[r] !== undefined) {
               dynamicServices[r] = parsedPrefs.enabledServices[r];
             } else {
@@ -182,6 +191,7 @@ export default function App() {
           const finalPrefs = {
             examFocus: parsedPrefs.examFocus || 'step1',
             remoteDeckUrl: parsedPrefs.remoteDeckUrl || DEFAULT_DECK_URL,
+            showYieldTags: parsedPrefs.showYieldTags !== undefined ? parsedPrefs.showYieldTags : true,
             enabledServices: dynamicServices
           };
 
@@ -280,7 +290,7 @@ export default function App() {
     setSyllabusResults({});
     setSearchStatus('idle');
     setPrompt('');
-    setSelectedVideoFilter(null);
+    setSelectedVideoFilters([]);
     if (worker) {
       worker.postMessage({ type: 'CLEAR_CSV' });
     }
@@ -392,7 +402,7 @@ export default function App() {
     setCardExplanations({});
     setExtractedConcepts([]);
     setExtractedSyllabus(null);
-    setSelectedVideoFilter(null);
+    setSelectedVideoFilters([]);
 
     try {
       const isQuotedMode = prompt.trim().startsWith('"') && prompt.trim().endsWith('"');
@@ -435,7 +445,7 @@ export default function App() {
                                resourceName === 'SketchyPath' ? 'Sketchy Pathology' : 
                                resourceName;
 
-        // CRITICAL: NEVER render 'Low/High Yield' inside the Video Summary counts
+        // CRITICAL SEPARATION RULE: "Low/High Yield" is completely hidden from Recommended Videos counts
         if (normalizedName === 'Low/High Yield' || normalizedName === 'Low/HighYield') return;
 
         const isEnabled = preferences.enabledServices[normalizedName] === true || 
@@ -635,6 +645,15 @@ export default function App() {
     }
   };
 
+  // MULTI-SELECT FILTER ARRAY CONTROLLER
+  const handleToggleVideoFilter = (videoName) => {
+    setSelectedVideoFilters(prev => 
+      prev.includes(videoName) ? prev.filter(f => f !== videoName) : [...prev, videoName]
+    );
+  };
+
+  const clearAllFilters = () => setSelectedVideoFilters([]);
+
   const renderCardItem = (item, index) => (
     <div key={index} className="p-5 hover:bg-slate-50 transition-colors border-b border-slate-100 last:border-b-0">
       <div 
@@ -654,27 +673,28 @@ export default function App() {
           const isEnabled = preferences.enabledServices[normalizedCategory] === true || 
                             preferences.enabledServices[category] === true;
 
-          // STRICT FILTER HIDE (If resource is unchecked in settings, completely hide it)
-          if (!vids || vids.length === 0 || !isEnabled) return null;
-
-          return vids.map((vid, i) => {
-            // CUSTOM YIELD BADGE (Rendered as gold pill, no video icon)
-            if (normalizedCategory === 'Low/High Yield' || normalizedCategory === 'Low/HighYield') {
-              return (
+          // SPECIAL YIELD BADGE TOGGLE (Default to true if not explicitly disabled in settings)
+          if (normalizedCategory === 'Low/High Yield' || normalizedCategory === 'Low/HighYield') {
+            if (preferences.showYieldTags !== false) {
+              return vids.map((vid, i) => (
                 <span key={`${category}-${i}`} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200 animate-fade-in shadow-sm">
                   <Sparkles className="w-3.5 h-3.5 text-amber-500" />
                   <span>{vid}</span>
                 </span>
-              );
+              ));
             }
+            return null;
+          }
 
-            return (
-              <span key={`${category}-${i}`} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200 animate-fade-in">
-                <Video className="w-3 h-3 text-slate-400" />
-                <span className="font-semibold text-slate-900 ml-1">{normalizedCategory}:</span> {vid}
-              </span>
-            );
-          });
+          // STRICT FILTER HIDE (If resource is unchecked in settings, completely hide it)
+          if (!vids || vids.length === 0 || !isEnabled) return null;
+
+          return vids.map((vid, i) => (
+            <span key={`${category}-${i}`} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200 animate-fade-in">
+              <Video className="w-3 h-3 text-slate-400" />
+              <span className="font-semibold text-slate-900 ml-1">{normalizedCategory}:</span> {vid}
+            </span>
+          ));
         })}
         
         <button
@@ -702,127 +722,14 @@ export default function App() {
     </div>
   );
 
-  const CollapsibleCategory = ({ category, vids, selectedVideoFilter, setSelectedVideoFilter }) => {
-    const [isOpen, setIsOpen] = useState(true);
-    
-    return (
-      <div className="space-y-2">
-        <button 
-          onClick={() => setIsOpen(!isOpen)}
-          className="w-full flex items-center justify-between text-sm font-bold text-slate-800 uppercase tracking-wide border-b border-slate-200 pb-1 hover:text-indigo-600 transition-colors focus:outline-none"
-        >
-          <span>{category}</span>
-          {isOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
-        </button>
-        
-        {isOpen && (
-          <ul className="space-y-1 mt-2">
-            {vids.map((vidObj, idx) => (
-              <li 
-                key={idx} 
-                onClick={() => setSelectedVideoFilter(selectedVideoFilter === vidObj.name ? null : vidObj.name)}
-                className={`text-sm flex items-start justify-between gap-3 py-1.5 px-2 -mx-2 rounded-md cursor-pointer transition-all ${
-                  selectedVideoFilter === vidObj.name 
-                    ? 'bg-indigo-100 text-indigo-900 border border-indigo-200 shadow-sm font-medium' 
-                    : 'text-slate-600 hover:bg-slate-50'
-                }`}
-                title="Click to filter flashcards by this video"
-              >
-                <div className="flex items-start gap-2">
-                  <span className={`mt-0.5 shrink-0 ${selectedVideoFilter === vidObj.name ? 'text-indigo-600' : 'text-indigo-400'}`}>•</span> 
-                  <span>{vidObj.name}</span>
-                </div>
-                <span className={`${
-                  selectedVideoFilter === vidObj.name 
-                    ? 'bg-indigo-200 text-indigo-800' 
-                    : 'bg-indigo-100 text-indigo-700'
-                } px-1.5 py-0.5 rounded text-xs font-bold shrink-0 mt-0.5 transition-colors`}>
-                  {vidObj.count} card{vidObj.count !== 1 ? 's' : ''}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    );
-  };
-
-  const CollapsibleSection = ({ summaryData, title, selectedVideoFilter, setSelectedVideoFilter }) => {
-    const [isOpen, setIsOpen] = useState(true);
-    
-    if (!summaryData) return null;
-
-    const activeSummaryData = Object.fromEntries(
-      Object.entries(summaryData).filter(([category, vids]) => 
-        vids.length > 0 && preferences.enabledServices[category] === true
-      )
-    );
-    
-    const isEmpty = Object.keys(activeSummaryData).length === 0;
-    
-    return (
-      <div className="p-5 border-t border-slate-100 first:border-t-0">
-        {title && (
-          <button 
-            onClick={() => setIsOpen(!isOpen)}
-            className="w-full flex items-center justify-between text-sm font-bold text-slate-800 mb-4 bg-slate-100 px-3 py-1.5 rounded-lg hover:bg-slate-200 transition-colors focus:outline-none"
-          >
-            <div className="flex items-center gap-2">
-              <Layers className="w-4 h-4 text-indigo-500" /> {title}
-            </div>
-            {isOpen ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
-          </button>
-        )}
-        {(!title || isOpen) && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-fade-in">
-            {Object.entries(activeSummaryData).map(([category, vids]) => (
-              <CollapsibleCategory 
-                key={category} 
-                category={category} 
-                vids={vids} 
-                selectedVideoFilter={selectedVideoFilter} 
-                setSelectedVideoFilter={setSelectedVideoFilter} 
-              />
-            ))}
-            
-            {isEmpty && (
-              <p className="text-sm text-slate-500 italic col-span-full">
-                No active videos matched your preferences.
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  const InfoBlock = ({ title, icon: Icon, defaultOpen = true, children }) => {
-    const [isOpen, setIsOpen] = useState(defaultOpen);
-    return (
-      <div className="bg-blue-50 rounded-xl shadow-sm border border-blue-100 mb-6 overflow-hidden">
-        <div 
-          onClick={() => setIsOpen(!isOpen)}
-          className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-blue-100/50 transition-colors"
-        >
-          <div className="flex items-center gap-2 text-blue-900 select-none">
-            <Icon className="w-4 h-4 text-blue-600" />
-            <span className="text-sm font-bold">{title}</span>
-          </div>
-          {isOpen ? <ChevronUp className="w-4 h-4 text-blue-400" /> : <ChevronDown className="w-4 h-4 text-blue-400" />}
-        </div>
-        {isOpen && (
-          <div className="px-4 pb-4 animate-fade-in">
-            {children}
-          </div>
-        )}
-      </div>
-    );
-  };
-
   const getActiveSettingResources = () => {
-    if (preferences.examFocus === 'step1') return step1Resources;
-    if (preferences.examFocus === 'step2') return step2Resources;
-    return Array.from(new Set([...step1Resources, ...step2Resources])).sort();
+    let list = [];
+    if (preferences.examFocus === 'step1') list = step1Resources;
+    else if (preferences.examFocus === 'step2') list = step2Resources;
+    else list = Array.from(new Set([...step1Resources, ...step2Resources]));
+    
+    // Completely filter out Yield tags from scrolled settings so they never pollute dynamic counts
+    return list.filter(r => r !== 'Low/High Yield' && r !== 'Low/HighYield').sort();
   };
 
   const setAllResourcesSelected = (status) => {
@@ -831,6 +738,15 @@ export default function App() {
       updated[r] = status;
     });
     savePreferencesLocally({ ...preferences, enabledServices: updated });
+  };
+
+  // MULTI-SELECT ARRAY DISPATCH INTERSECTION MATCHER
+  const getFilteredResults = (targetCardsList) => {
+    if (selectedVideoFilters.length === 0) return targetCardsList;
+    return targetCardsList.filter(item => {
+      const cardFlattenedTagsList = Object.values(item.extractedVideos).flat();
+      return selectedVideoFilters.some(activeFilter => cardFlattenedTagsList.includes(activeFilter));
+    });
   };
 
   return (
@@ -990,6 +906,24 @@ export default function App() {
                 </div>
               )}
             </div>
+
+            {/* RESPONSIVE YOUTUBE TUTORIAL PANEL */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+              <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                <PlayCircle className="w-4 h-4 text-indigo-600" /> App Video Tutorial
+              </h2>
+              <div className="relative w-full aspect-video rounded-lg overflow-hidden shadow border">
+                <iframe 
+                  className="absolute inset-0 w-full h-full"
+                  src="https://www.youtube.com/embed/nmRW_EvVbL0" 
+                  title="Anki Video Finder Tutorial"
+                  frameBorder="0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+                  allowFullScreen
+                ></iframe>
+              </div>
+            </div>
+
           </div>
 
           <div className="lg:col-span-8 space-y-6">
@@ -1005,7 +939,7 @@ export default function App() {
             {searchStatus === 'complete' && results.length > 0 && (
               <>
                 {searchMode === 'normal' && extractedConcepts.length > 0 && (
-                  <InfoBlock title="AI Search Logic (Strict Intersection):" icon={Sparkles}>
+                  <InfoBlock title="AI Search Logic (Strict Intersection):" icon={Sparkles} isOpen={isSyllabusLogicExpanded} setIsOpen={setIsSyllabusLogicExpanded}>
                     <div className="flex flex-wrap gap-2 pt-1">
                       {extractedConcepts.map((group, idx) => (
                         <div key={idx} className="flex items-center gap-2">
@@ -1020,7 +954,7 @@ export default function App() {
                 )}
 
                 {searchMode === 'syllabus' && extractedSyllabus && (
-                  <InfoBlock title="AI Syllabus Parsing Logic:" icon={Sparkles}>
+                  <InfoBlock title="AI Syllabus Parsing Logic:" icon={Sparkles} isOpen={isSyllabusLogicExpanded} setIsOpen={setIsSyllabusLogicExpanded}>
                     <div className="space-y-3 pt-1">
                       {extractedSyllabus.categories.map((cat, idx) => (
                         <div key={idx} className="bg-white p-3 rounded-lg border border-blue-100 shadow-sm">
@@ -1053,7 +987,15 @@ export default function App() {
                   icon={PlayCircle}
                   theme="indigo"
                   headerRight={
-                    <>
+                    <div className="flex items-center gap-2">
+                      {selectedVideoFilters.length > 0 && (
+                        <button 
+                          onClick={clearAllFilters}
+                          className="text-xs flex items-center gap-1 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 font-semibold px-2.5 py-1.5 rounded-lg shadow-sm transition-colors"
+                        >
+                          <Filter className="w-3 h-3" /> Clear ({selectedVideoFilters.length}) Filters
+                        </button>
+                      )}
                       <button 
                         onClick={handleGenerateSummary}
                         disabled={summaryStatus === 'loading'}
@@ -1069,7 +1011,7 @@ export default function App() {
                         <BrainCircuit className="w-4 h-4" />
                         ✨ Pre-test Quiz
                       </button>
-                    </>
+                    </div>
                   }
                 >
                   {summaryStatus !== 'idle' && (
@@ -1093,67 +1035,56 @@ export default function App() {
                   {searchMode === 'normal' ? (
                     <CollapsibleSection 
                       summaryData={videoSummary} 
-                      selectedVideoFilter={selectedVideoFilter} 
-                      setSelectedVideoFilter={setSelectedVideoFilter} 
+                      preferences={preferences}
+                      selectedVideoFilters={selectedVideoFilters}
+                      handleToggleVideoFilter={handleToggleVideoFilter}
                     />
                   ) : (
                     <div className="divide-y divide-slate-100 animate-fade-in">
                       <CollapsibleSection 
                         summaryData={videoSummary} 
                         title="Aggregate (All Categories)" 
-                        selectedVideoFilter={selectedVideoFilter} 
-                        setSelectedVideoFilter={setSelectedVideoFilter} 
+                        preferences={preferences}
+                        selectedVideoFilters={selectedVideoFilters}
+                        handleToggleVideoFilter={handleToggleVideoFilter}
                       />
                       {Object.entries(syllabusVideoSummaries).map(([catName, catSummary]) => (
                         <CollapsibleSection 
                           key={catName}
                           summaryData={catSummary} 
                           title={catName} 
-                          selectedVideoFilter={selectedVideoFilter} 
-                          setSelectedVideoFilter={setSelectedVideoFilter} 
+                          preferences={preferences}
+                          selectedVideoFilters={selectedVideoFilters}
+                          handleToggleVideoFilter={handleToggleVideoFilter}
                         />
                       ))}
                     </div>
                   )}
                 </SectionCard>
 
+                {/* Normal Mode List */}
                 {searchMode === 'normal' && (() => {
-                  const displayedResults = selectedVideoFilter 
-                    ? results.filter(item => Object.values(item.extractedVideos).flat().includes(selectedVideoFilter))
-                    : results;
-                    
+                  const filteredList = getFilteredResults(results);
                   return (
                     <SectionCard
                       title="Associated Flashcards"
                       icon={BookOpen}
                       theme="slate"
-                      badgeText={`${displayedResults.length} results`}
-                      headerRight={
-                        selectedVideoFilter && (
-                          <button 
-                            onClick={() => setSelectedVideoFilter(null)}
-                            className="text-xs flex items-center gap-1 bg-white border border-slate-200 text-slate-600 px-2 py-1 rounded hover:bg-slate-50 shadow-sm"
-                          >
-                            Clear Filter
-                          </button>
-                        )
-                      }
+                      badgeText={`${filteredList.length} results`}
                     >
                       <div className="divide-y divide-slate-100 max-h-[800px] overflow-y-auto">
-                        {displayedResults.map((item, idx) => renderCardItem(item, `norm-${idx}`))}
+                        {filteredList.map((item, idx) => renderCardItem(item, `norm-${idx}`))}
                       </div>
                     </SectionCard>
                   );
                 })()}
 
+                {/* Syllabus Mode List */}
                 {searchMode === 'syllabus' && (
                   <div>
                     {Object.entries(syllabusResults).map(([categoryName, items]) => {
-                      const displayedItems = selectedVideoFilter 
-                        ? items.filter(item => Object.values(item.extractedVideos).flat().includes(selectedVideoFilter))
-                        : items;
-
-                      if (displayedItems.length === 0) return null; 
+                      const filteredItems = getFilteredResults(items);
+                      if (filteredItems.length === 0) return null; 
                       
                       return (
                         <SectionCard
@@ -1161,20 +1092,10 @@ export default function App() {
                           title={categoryName}
                           icon={AlignLeft}
                           theme="slate"
-                          badgeText={`${displayedItems.length} results`}
-                          headerRight={
-                            selectedVideoFilter && (
-                              <button 
-                                onClick={() => setSelectedVideoFilter(null)}
-                                className="text-xs flex items-center gap-1 bg-white border border-slate-200 text-slate-600 px-2 py-1 rounded hover:bg-slate-50 shadow-sm"
-                              >
-                                Clear Filter
-                              </button>
-                            )
-                          }
+                          badgeText={`${filteredItems.length} results`}
                         >
                           <div className="divide-y divide-slate-100 max-h-[600px] overflow-y-auto">
-                            {displayedItems.map((item, idx) => renderCardItem(item, `syl-${categoryName}-${idx}`))}
+                            {filteredItems.map((item, idx) => renderCardItem(item, `syl-${categoryName}-${idx}`))}
                           </div>
                         </SectionCard>
                       );
@@ -1248,6 +1169,34 @@ export default function App() {
                       </button>
                     ))}
                   </div>
+                </div>
+
+                {/* Dedicated Low/High Yield display toggle */}
+                <div className="border-t pt-4 border-slate-100">
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                    Card Yield Display
+                  </label>
+                  <button
+                    onClick={() => savePreferencesLocally({ 
+                      ...preferences, 
+                      showYieldTags: preferences.showYieldTags === false ? true : false 
+                    })}
+                    className={`w-full flex items-center justify-between p-3 rounded-lg border text-sm font-medium transition-all ${
+                      preferences.showYieldTags !== false 
+                        ? 'bg-amber-50 text-amber-900 border-amber-300 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <Sparkles className={`w-4 h-4 ${preferences.showYieldTags !== false ? 'text-amber-500' : 'text-slate-400'}`} />
+                      Show High/Low Yield Badges on Flashcards
+                    </span>
+                    <span className={`text-xs px-2 py-0.5 rounded font-bold ${
+                      preferences.showYieldTags !== false ? 'bg-amber-200 text-amber-800' : 'bg-slate-200 text-slate-600'
+                    }`}>
+                      {preferences.showYieldTags !== false ? 'ENABLED' : 'DISABLED'}
+                    </span>
+                  </button>
                 </div>
 
                 {/* Filter dynamically scanned services */}
@@ -1444,37 +1393,126 @@ export default function App() {
   );
 }
 
-// --- GENERIC SECTION CARD COMPONENT ---
-const SectionCard = ({ title, icon: Icon, badgeText, theme = 'slate', defaultOpen = true, headerRight, children }) => {
-  const [isOpen, setIsOpen] = useState(defaultOpen);
+// --- OUTSIDE COMPONENTS (Prevents structural unmounting & UI shifts) ---
 
-  const themes = {
-    indigo: { bg: 'bg-indigo-50', text: 'text-indigo-900', icon: 'text-indigo-600', chevron: 'text-indigo-400' },
-    slate: { bg: 'bg-slate-50/50', text: 'text-slate-800', icon: 'text-slate-600', chevron: 'text-slate-400' }
-  };
-
-  const t = themes[theme] || themes.slate;
-
+// --- COMPONENT: COLLAPSIBLE CATEGORY ---
+const CollapsibleCategory = ({ category, vids, selectedVideoFilters, handleToggleVideoFilter }) => {
+  const [isOpen, setIsOpen] = useState(true);
+  
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-slate-200 mb-6 overflow-hidden">
+    <div className="space-y-2">
+      <button 
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full flex items-center justify-between text-sm font-bold text-slate-800 uppercase tracking-wide border-b border-slate-200 pb-1 hover:text-indigo-600 transition-colors focus:outline-none"
+      >
+        <span>{category}</span>
+        {isOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+      </button>
+      
+      {isOpen && (
+        <ul className="space-y-1 mt-2">
+          {vids.map((vidObj, idx) => {
+            const isCurrentlyFiltered = selectedVideoFilters.includes(vidObj.name);
+            return (
+              <li 
+                key={idx} 
+                onClick={() => handleToggleVideoFilter(vidObj.name)}
+                className={`text-sm flex items-start justify-between gap-3 py-1.5 px-2 -mx-2 rounded-md cursor-pointer transition-all ${
+                  isCurrentlyFiltered 
+                    ? 'bg-indigo-600 text-white border border-indigo-700 shadow-sm font-medium' 
+                    : 'text-slate-600 hover:bg-slate-50'
+                }`}
+                title="Click to toggle multi-select filter"
+              >
+                <div className="flex items-start gap-2">
+                  <span className={`mt-0.5 shrink-0 ${isCurrentlyFiltered ? 'text-white' : 'text-indigo-400'}`}>•</span> 
+                  <span>{vidObj.name}</span>
+                </div>
+                <span className={`${
+                  isCurrentlyFiltered 
+                    ? 'bg-indigo-700 text-indigo-100' 
+                    : 'bg-indigo-100 text-indigo-700'
+                } px-1.5 py-0.5 rounded text-xs font-bold shrink-0 mt-0.5 transition-colors`}>
+                  {vidObj.count} card{vidObj.count !== 1 ? 's' : ''}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+// --- COMPONENT: COLLAPSIBLE SECTION ---
+const CollapsibleSection = ({ summaryData, title, preferences, selectedVideoFilters, handleToggleVideoFilter }) => {
+  const [isOpen, setIsOpen] = useState(true);
+  
+  if (!summaryData) return null;
+
+  const activeSummaryData = Object.fromEntries(
+    Object.entries(summaryData).filter(([category, vids]) => 
+      vids.length > 0 && preferences.enabledServices[category] === true
+    )
+  );
+  
+  const isEmpty = Object.keys(activeSummaryData).length === 0;
+  
+  return (
+    <div className="p-5 border-t border-slate-100 first:border-t-0">
+      {title && (
+        <button 
+          onClick={() => setIsOpen(!isOpen)}
+          className="w-full flex items-center justify-between text-sm font-bold text-slate-800 mb-4 bg-slate-100 px-3 py-1.5 rounded-lg hover:bg-slate-200 transition-colors focus:outline-none"
+        >
+          <div className="flex items-center gap-2">
+            <Layers className="w-4 h-4 text-indigo-500" /> {title}
+          </div>
+          {isOpen ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+        </button>
+      )}
+      {(!title || isOpen) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-fade-in">
+          {Object.entries(activeSummaryData).map(([category, vids]) => (
+            <CollapsibleCategory 
+              key={category} 
+              category={category} 
+              vids={vids} 
+              selectedVideoFilters={selectedVideoFilters}
+              handleToggleVideoFilter={handleToggleVideoFilter}
+            />
+          ))}
+          
+          {isEmpty && (
+            <p className="text-sm text-slate-500 italic col-span-full">
+              No active videos matched your preferences.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- COMPONENT: INFO BLOCK ---
+const InfoBlock = ({ title, icon: Icon, isOpen, setIsOpen, children }) => {
+  return (
+    <div className="bg-blue-50 rounded-xl shadow-sm border border-blue-100 mb-6 overflow-hidden">
       <div 
         onClick={() => setIsOpen(!isOpen)}
-        className={`${t.bg} border-b border-slate-200 px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 cursor-pointer transition-colors hover:bg-slate-100/50`}
+        className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-blue-100/50 transition-colors"
       >
-        <div className="flex items-center gap-2 select-none">
-          <Icon className={`w-5 h-5 ${t.icon}`} />
-          <h2 className={`text-lg font-bold ${t.text}`}>
-            {title} {badgeText && <span className="text-sm font-normal opacity-70 ml-1">({badgeText})</span>}
-          </h2>
-          {isOpen ? <ChevronUp className={`w-5 h-5 ml-1 ${t.chevron}`} /> : <ChevronDown className={`w-5 h-5 ml-1 ${t.chevron}`} />}
+        <div className="flex items-center gap-2 text-blue-900 select-none">
+          <Icon className="w-4 h-4 text-blue-600" />
+          <span className="text-sm font-bold">{title}</span>
         </div>
-        {headerRight && (
-          <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
-            {headerRight}
-          </div>
-        )}
+        {isOpen ? <ChevronUp className="w-4 h-4 text-blue-400" /> : <ChevronDown className="w-4 h-4 text-blue-400" />}
       </div>
-      {isOpen && <div className="bg-white">{children}</div>}
+      {isOpen && (
+        <div className="px-4 pb-4 animate-fade-in">
+          {children}
+        </div>
+      )}
     </div>
   );
 };
