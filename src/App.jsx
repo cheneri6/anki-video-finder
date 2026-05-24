@@ -6,7 +6,6 @@ import {
   ChevronDown, ChevronUp, Settings, Sliders, Key, HelpCircle, CheckSquare, Square
 } from 'lucide-react';
 
-// Your persistent, cloud-hosted default deck URL
 const DEFAULT_DECK_URL = "https://raw.githubusercontent.com/cheneri6/anki-database/refs/heads/main/AnKing_Step_Deck.csv";
 
 // --- INDEXED DB SERVICES FOR OFFLINE STORAGE ---
@@ -84,9 +83,7 @@ export default function App() {
   const [searchMode, setSearchMode] = useState('normal'); 
   const [results, setResults] = useState([]); 
   const [syllabusResults, setSyllabusResults] = useState({}); 
-  const [syllabusVideoSummaries, setSyllabusVideoSummaries] = useState({}); 
   
-  const [videoSummary, setVideoSummary] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [extractedConcepts, setExtractedConcepts] = useState([]); 
   const [extractedSyllabus, setExtractedSyllabus] = useState(null); 
@@ -110,7 +107,7 @@ export default function App() {
       try {
         const parsed = JSON.parse(localPrefs);
         // Default URL safety check
-        if (!parsed.remoteDeckUrl) {
+        if (!parsed.remoteDeckUrl || parsed.remoteDeckUrl.includes('default-app-id') || parsed.remoteDeckUrl.includes('anki-video-finder')) {
           parsed.remoteDeckUrl = DEFAULT_DECK_URL;
         }
         setPreferences(parsed);
@@ -284,8 +281,6 @@ export default function App() {
     setStep2Resources([]);
     setResults([]);
     setSyllabusResults({});
-    setSyllabusVideoSummaries({});
-    setVideoSummary(null);
     setSearchStatus('idle');
     setPrompt('');
     setSelectedVideoFilter(null);
@@ -307,7 +302,6 @@ export default function App() {
 
     for (let i = 0; i < 6; i++) {
       try {
-        // Stable production Gemini Flash Model
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -335,7 +329,6 @@ export default function App() {
 
     for (let i = 0; i < 6; i++) {
       try {
-        // Stable production Gemini Flash Model
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -406,8 +399,6 @@ export default function App() {
     setErrorMsg('');
     setResults([]);
     setSyllabusResults({});
-    setSyllabusVideoSummaries({});
-    setVideoSummary(null);
     setAiSummary('');
     setSummaryStatus('idle');
     setAiQuiz(null);
@@ -457,13 +448,26 @@ export default function App() {
 
     flatFormattedCards.forEach(item => {
       Object.entries(item.extractedVideos).forEach(([resourceName, videosList]) => {
-        // STRICT FILTER MATCHING (Only show resources explicitly configured to true)
-        if (preferences.enabledServices[resourceName] === true) {
-          if (!counts[resourceName]) {
-            counts[resourceName] = {};
+        // Robust backward-compatible category checks
+        const normalizedName = resourceName === 'B&B' ? 'Boards & Beyond' : 
+                               resourceName === 'SketchyMicro' ? 'Sketchy Micro' : 
+                               resourceName === 'SketchyPharm' ? 'Sketchy Pharm' : 
+                               resourceName === 'SketchyPath' ? 'Sketchy Pathology' : 
+                               resourceName;
+
+        // EXCLUDE 'Low/High Yield' tags from displaying in recommended video counts (it is not a video)
+        if (normalizedName === 'Low/High Yield') return;
+
+        // Check configured checkboxes matching both raw and clean names
+        const isEnabled = preferences.enabledServices[normalizedName] === true || 
+                          preferences.enabledServices[resourceName] === true;
+
+        if (isEnabled) {
+          if (!counts[normalizedName]) {
+            counts[normalizedName] = {};
           }
           videosList.forEach(v => {
-            counts[resourceName][v] = (counts[resourceName][v] || 0) + 1;
+            counts[normalizedName][v] = (counts[normalizedName][v] || 0) + 1;
           });
         }
       });
@@ -475,12 +479,26 @@ export default function App() {
         .map(([name, count]) => ({ name, count }))
         .sort((a, b) => b.count - a.count); 
         
-      const filtered = sorted.filter(item => item.count >= 5);
-      summary[resourceName] = filtered.length < 3 ? sorted.slice(0, 3) : filtered;
+      // NEW HIGH-YIELD THRESHOLD:
+      // Show ALL videos containing 4 or more cards. 
+      // If there are fewer than 3 qualifying videos, fall back to show the top 3 videos for that category.
+      const filtered = sorted.filter((item, index) => item.count >= 4 || index < 3);
+      summary[resourceName] = filtered;
     });
 
     return summary;
   };
+
+  // DERIVE ALL STUDY VIDEO SUMMARIES DIRECTLY DURING RENDER PHASE
+  // This completely bypasses stale state closures and guarantees live updates!
+  const videoSummary = generateVideoSummaryData(results);
+
+  const syllabusVideoSummaries = {};
+  if (searchMode === 'syllabus') {
+    Object.entries(syllabusResults).forEach(([catName, cards]) => {
+      syllabusVideoSummaries[catName] = generateVideoSummaryData(cards);
+    });
+  }
 
   const processWorkerResults = (searchResults) => {
     const formattedCards = searchResults.map(item => ({
@@ -489,7 +507,6 @@ export default function App() {
       extractedVideos: parseTagsForVideos(item.card.tags)
     }));
 
-    setVideoSummary(generateVideoSummaryData(formattedCards));
     setResults(formattedCards);
     setSearchStatus('complete');
   };
@@ -509,14 +526,6 @@ export default function App() {
         return formattedCard;
       });
     });
-
-    setVideoSummary(generateVideoSummaryData(flatResults));
-    
-    const categorySummaries = {};
-    Object.entries(formattedSyllabusMap).forEach(([catName, cards]) => {
-      categorySummaries[catName] = generateVideoSummaryData(cards);
-    });
-    setSyllabusVideoSummaries(categorySummaries);
 
     setSyllabusResults(formattedSyllabusMap);
     setResults(flatResults); 
@@ -663,12 +672,23 @@ export default function App() {
       <div className="flex flex-wrap gap-2 mt-2">
         {Object.keys(item.extractedVideos).map(category => {
           const vids = item.extractedVideos[category];
-          // STRICT VISUAL SHIELD FOR EXCLUDED PREFERENCES
-          if (!vids || vids.length === 0 || preferences.enabledServices[category] !== true) return null;
+          // Normalization check so 'B&B' or 'Low/HighYield' match config values perfectly
+          const normalizedCategory = category === 'B&B' ? 'Boards & Beyond' : 
+                                     category === 'SketchyMicro' ? 'Sketchy Micro' : 
+                                     category === 'SketchyPharm' ? 'Sketchy Pharm' : 
+                                     category === 'SketchyPath' ? 'Sketchy Pathology' : 
+                                     category;
+
+          const isEnabled = preferences.enabledServices[normalizedCategory] === true || 
+                            preferences.enabledServices[category] === true;
+
+          // STRICT FILTER HIDE (If resource is not explicitly configured to true, skip render)
+          if (!vids || vids.length === 0 || !isEnabled) return null;
+
           return vids.map((vid, i) => (
             <span key={`${category}-${i}`} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200 animate-fade-in">
               <Video className="w-3 h-3 text-slate-400" />
-              <span className="font-semibold text-slate-900 ml-1">{category}:</span> {vid}
+              <span className="font-semibold text-slate-900 ml-1">{normalizedCategory}:</span> {vid}
             </span>
           ));
         })}
@@ -747,7 +767,15 @@ export default function App() {
     const [isOpen, setIsOpen] = useState(true);
     
     if (!summaryData) return null;
-    const isEmpty = Object.values(summaryData).every(v => v.length === 0);
+
+    // Filter recommended resources dynamically by checked preferences strictly
+    const activeSummaryData = Object.fromEntries(
+      Object.entries(summaryData).filter(([category, vids]) => 
+        vids.length > 0 && preferences.enabledServices[category] === true
+      )
+    );
+    
+    const isEmpty = Object.keys(activeSummaryData).length === 0;
     
     return (
       <div className="p-5 border-t border-slate-100 first:border-t-0">
@@ -764,18 +792,15 @@ export default function App() {
         )}
         {(!title || isOpen) && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-fade-in">
-            {Object.entries(summaryData).map(([category, vids]) => {
-              if (vids.length === 0 || preferences.enabledServices[category] !== true) return null;
-              return (
-                <CollapsibleCategory 
-                  key={category} 
-                  category={category} 
-                  vids={vids} 
-                  selectedVideoFilter={selectedVideoFilter} 
-                  setSelectedVideoFilter={setSelectedVideoFilter} 
-                />
-              );
-            })}
+            {Object.entries(activeSummaryData).map(([category, vids]) => (
+              <CollapsibleCategory 
+                key={category} 
+                category={category} 
+                vids={vids} 
+                selectedVideoFilter={selectedVideoFilter} 
+                setSelectedVideoFilter={setSelectedVideoFilter} 
+              />
+            ))}
             
             {isEmpty && (
               <p className="text-sm text-slate-500 italic col-span-full">
