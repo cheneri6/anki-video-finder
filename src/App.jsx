@@ -3,12 +3,315 @@ import {
   Upload, Search, Video, BookOpen, Layers, 
   CheckCircle, Loader2, FileText, AlertCircle, PlayCircle,
   Sparkles, BrainCircuit, MessageSquare, X, AlignLeft, Trash2,
-  ChevronDown, ChevronUp, Settings, Sliders, Key, HelpCircle, CheckSquare, Square
+  ChevronDown, ChevronUp, Settings, Sliders, Database, Link, Save, UserCheck, Cloud, RefreshCw, HelpCircle
 } from 'lucide-react';
 
+// Firebase Modular Imports
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, getDoc } from 'firebase/firestore';
+
+// Initialize Firebase configuration dynamically using environment flags
+const firebaseConfig = JSON.parse(__firebase_config);
+const firebaseApp = initializeApp(firebaseConfig);
+const auth = getAuth(firebaseApp);
+const db = getFirestore(firebaseApp);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+const apiKey = ""; // Injected by the environment runtime
+
+// Default deck hosted securely on GitHub
 const DEFAULT_DECK_URL = "https://raw.githubusercontent.com/cheneri6/anki-database/refs/heads/main/AnKing_Step_Deck.csv";
 
-// --- INDEXED DB SERVICES FOR OFFLINE STORAGE ---
+// --- INLINE WEB WORKER (DYNAMICAL SCANS ALL DECK TAG CATEGORIES) ---
+const workerCode = `
+  let cards = [];
+  let userPreferences = {
+    examFocus: 'step1', 
+    enabledServices: {}
+  };
+
+  function detectDelimiter(text) {
+     const lines = text.split('\\n').slice(0, 50);
+     let commaCount = 0;
+     let tabCount = 0;
+     for (let i = 0; i < lines.length; i++) {
+        const l = lines[i];
+        if (!l.startsWith('#')) {
+            commaCount += (l.match(/,/g) || []).length;
+            tabCount += (l.match(/\\t/g) || []).length;
+        }
+     }
+     return tabCount > commaCount ? '\\t' : ',';
+  }
+
+  function parseData(text) {
+    const delimiter = detectDelimiter(text);
+    const result = [];
+    let row = [];
+    let startValue = 0;
+    let inQuotes = false;
+    
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      
+      if (c === '"') {
+        inQuotes = !inQuotes;
+      } else if (c === delimiter && !inQuotes) {
+        let val = text.substring(startValue, i);
+        if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) {
+          val = val.substring(1, val.length - 1).replace(/""/g, '"');
+        }
+        row.push(val);
+        startValue = i + 1;
+      } else if (c === '\\n' && !inQuotes) {
+        let val = text.substring(startValue, i);
+        if (val.length > 0 && val.charCodeAt(val.length - 1) === 13) { 
+            val = val.substring(0, val.length - 1);
+        }
+        if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) {
+          val = val.substring(1, val.length - 1).replace(/""/g, '"');
+        }
+        row.push(val);
+        if (row.length > 0) result.push(row);
+        row = [];
+        startValue = i + 1;
+      }
+    }
+    if (startValue < text.length) {
+      let val = text.substring(startValue);
+      if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) {
+        val = val.substring(1, val.length - 1).replace(/""/g, '"');
+      }
+      row.push(val);
+      result.push(row);
+    }
+    return result;
+  }
+
+  function cleanResourceName(raw) {
+    const resourceMap = {
+      'B&B': 'Boards & Beyond',
+      'SketchyMicro': 'Sketchy Micro',
+      'SketchyPharm': 'Sketchy Pharm',
+      'SketchyPath': 'Sketchy Pathology',
+      'SketchyAnatomy': 'Sketchy Anatomy',
+      'SketchyBiochem': 'Sketchy Biochem',
+      'SketchyBiostats/Epidemiology': 'Sketchy Biostats/Epidemiology',
+      'SketchyImmunology': 'Sketchy Immunology',
+      'SketchyPhysiology': 'Sketchy Physiology',
+      'DirtyMedicine': 'Dirty Medicine',
+      'FirstAid': 'First Aid',
+      'NinjaNerd': 'Ninja Nerd',
+      'DivineIntervention': 'Divine Intervention',
+      'SketchyFM': 'Sketchy Family Medicine',
+      'SketchyIM': 'Sketchy Internal Medicine',
+      'SketchyNeurology': 'Sketchy Neurology',
+      'SketchyOBGYN': 'Sketchy OBGYN',
+      'SketchyPeds': 'Sketchy Pediatrics',
+      'SketchyPsych': 'Sketchy Psychiatry',
+      'SketchySurgery': 'Sketchy Surgery',
+      'Low/HighYield': 'Low/High Yield',
+      'USMLERx': 'USMLE Rx',
+      'OME': 'OnlineMedEd',
+      'OME_banner': 'OnlineMedEd Banner',
+      'Resources_by_rotation': 'Resources by Rotation'
+    };
+    return resourceMap[raw] || raw;
+  }
+
+  self.onmessage = function(e) {
+    const { type, payload } = e.data;
+    
+    if (type === 'LOAD_CSV') {
+      try {
+        const rows = parseData(payload);
+        cards = [];
+        
+        let tagsColIdx = -1;
+        for (let i = 0; i < Math.min(20, rows.length); i++) {
+          if (rows[i][0] && typeof rows[i][0] === 'string' && rows[i][0].startsWith('#tags column:')) {
+            const colNum = parseInt(rows[i][0].split(':')[1], 10);
+            if (!isNaN(colNum)) tagsColIdx = colNum - 1;
+            break;
+          }
+        }
+        
+        if (tagsColIdx === -1) {
+          for (let i = 0; i < Math.min(50, rows.length); i++) {
+            const r = rows[i];
+            if (r[0] && typeof r[0] === 'string' && r[0].startsWith('#')) continue;
+            for (let j = 0; j < r.length; j++) {
+              if (r[j] && typeof r[j] === 'string' && r[j].includes('#AK_')) {
+                tagsColIdx = j;
+                break;
+              }
+            }
+            if (tagsColIdx !== -1) break;
+          }
+        }
+
+        let discoveredStep1Resources = new Set();
+        let discoveredStep2Resources = new Set();
+        
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i];
+          if (r.length < 2 || (r[0] && typeof r[0] === 'string' && r[0].startsWith('#'))) continue; 
+          
+          let tags = '';
+          if (tagsColIdx !== -1 && tagsColIdx < r.length) {
+            tags = r[tagsColIdx];
+          } else {
+            tags = r[r.length - 1] || ''; 
+          }
+
+          const tagList = tags.split(' ');
+          tagList.forEach(t => {
+            if (!t) return;
+            const parts = t.split('::');
+            
+            const step1Idx = parts.findIndex(p => p.toLowerCase().includes('step1'));
+            if (step1Idx !== -1 && step1Idx + 1 < parts.length) {
+              let res = parts[step1Idx + 1].replace(/^#/, '');
+              if (res && !res.startsWith('^') && !res.startsWith('!') && res !== 'Subjects') {
+                discoveredStep1Resources.add(cleanResourceName(res));
+              }
+            }
+            
+            const step2Idx = parts.findIndex(p => p.toLowerCase().includes('step2'));
+            if (step2Idx !== -1 && step2Idx + 1 < parts.length) {
+              let res = parts[step2Idx + 1].replace(/^#/, '');
+              if (res && !res.startsWith('^') && !res.startsWith('!') && res !== 'Subjects') {
+                discoveredStep2Resources.add(cleanResourceName(res));
+              }
+            }
+          });
+
+          cards.push({
+            text: r[0] || '',
+            extra: r[1] || '',
+            tags: tags || ''
+          });
+        }
+        self.postMessage({ 
+          type: 'LOAD_COMPLETE', 
+          count: cards.length,
+          step1Resources: Array.from(discoveredStep1Resources).sort(),
+          step2Resources: Array.from(discoveredStep2Resources).sort()
+        });
+      } catch (error) {
+        self.postMessage({ type: 'ERROR', payload: error.message });
+      }
+    } 
+    
+    else if (type === 'UPDATE_PREFERENCES') {
+      userPreferences = payload;
+    }
+    
+    else if (type === 'SEARCH') {
+      const { conceptGroups } = payload;
+      let allMatches = [];
+      const lowerConceptGroups = conceptGroups.map(group => group.map(k => k.toLowerCase()));
+      
+      for (let i = 0; i < cards.length; i++) {
+        const c = cards[i];
+        
+        const hasStep1Tag = c.tags.toLowerCase().includes('step1');
+        const hasStep2Tag = c.tags.toLowerCase().includes('step2');
+        
+        if (userPreferences.examFocus === 'step1' && !hasStep1Tag && hasStep2Tag) continue;
+        if (userPreferences.examFocus === 'step2' && !hasStep2Tag && hasStep1Tag) continue;
+
+        let score = 0;
+        let matchCount = 0;
+        const searchPool = (c.text + " " + c.extra).toLowerCase();
+        
+        for (let j = 0; j < lowerConceptGroups.length; j++) {
+          let groupMatched = false;
+          const group = lowerConceptGroups[j];
+          for (let k = 0; k < group.length; k++) {
+            const term = group[k];
+            if (searchPool.includes(term)) {
+              groupMatched = true;
+              score += term.length;
+            }
+          }
+          if (groupMatched) matchCount++;
+        }
+        
+        if (matchCount > 0) {
+          allMatches.push({ card: c, score, matchCount });
+        }
+      }
+      
+      allMatches.sort((a, b) => {
+        if (b.matchCount !== a.matchCount) return b.matchCount - a.matchCount;
+        return b.score - a.score;
+      });
+
+      if (allMatches.length > 0) {
+         const highestMatchCount = allMatches[0].matchCount;
+         const topTier = allMatches.filter(m => m.matchCount === highestMatchCount);
+         self.postMessage({ type: 'SEARCH_COMPLETE', results: topTier.slice(0, 50) });
+      } else {
+         self.postMessage({ type: 'SEARCH_COMPLETE', results: [] });
+      }
+    }
+    
+    else if (type === 'SEARCH_SYLLABUS') {
+      const { categories } = payload;
+      let syllabusResults = {};
+
+      categories.forEach(cat => {
+        let catMatches = new Map();
+
+        cat.searchQueries.forEach(query => {
+           const lowerConceptGroups = query.requiredConcepts.map(group => group.map(k => k.toLowerCase()));
+           
+           for (let i = 0; i < cards.length; i++) {
+              const c = cards[i];
+              
+              const hasStep1Tag = c.tags.toLowerCase().includes('step1');
+              const hasStep2Tag = c.tags.toLowerCase().includes('step2');
+              if (userPreferences.examFocus === 'step1' && !hasStep1Tag && hasStep2Tag) continue;
+              if (userPreferences.examFocus === 'step2' && !hasStep2Tag && hasStep1Tag) continue;
+
+              let matchCount = 0;
+              const searchPool = (c.text + " " + c.extra).toLowerCase();
+
+              for (let j = 0; j < lowerConceptGroups.length; j++) {
+                let groupMatched = false;
+                const group = lowerConceptGroups[j];
+                for (let k = 0; k < group.length; k++) {
+                  if (searchPool.includes(group[k])) {
+                    groupMatched = true;
+                    break;
+                  }
+                }
+                if (groupMatched) matchCount++;
+              }
+
+              if (matchCount === lowerConceptGroups.length && lowerConceptGroups.length > 0) {
+                 if (!catMatches.has(c.text)) {
+                    catMatches.set(c.text, { card: c, score: 1 });
+                 }
+              }
+           }
+        });
+
+        syllabusResults[cat.name] = Array.from(catMatches.values()).slice(0, 40);
+      });
+
+      self.postMessage({ type: 'SEARCH_SYLLABUS_COMPLETE', results: syllabusResults });
+    }
+    
+    else if (type === 'CLEAR_CSV') {
+      cards = [];
+    }
+  };
+`;
+
+// --- INDEXED DB SERVICES ---
 const initDB = () => {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open('AnkiDB', 1);
@@ -58,25 +361,31 @@ const clearFileFromDB = async () => {
 
 export default function App() {
   const [worker, setWorker] = useState(null);
+  const [user, setUser] = useState(null);
   const [csvStatus, setCsvStatus] = useState('idle'); 
   const [cardCount, setCardCount] = useState(0);
   const [prompt, setPrompt] = useState('');
   
-  // Custom API Key and Settings State
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('anki_gemini_api_key') || "");
+  // Custom Settings & State
   const [showSettings, setShowSettings] = useState(false);
   const [showKeyGuide, setShowKeyGuide] = useState(false);
-  
-  // Dynamic resource sets loaded directly from card tags scanning
+
   const [step1Resources, setStep1Resources] = useState([]);
   const [step2Resources, setStep2Resources] = useState([]);
   
   const [preferences, setPreferences] = useState({
     examFocus: 'step1', 
-    enabledServices: {}, // Populated dynamically during deck upload
+    enabledServices: {}, // Populated dynamically on database scanning
     remoteDeckUrl: DEFAULT_DECK_URL 
   });
+  
+  const [syncingSettings, setSyncingSettings] = useState(false);
   const [saveToast, setSaveToast] = useState(false);
+
+  const preferencesRef = useRef(preferences);
+  useEffect(() => {
+    preferencesRef.current = preferences;
+  }, [preferences]);
   
   // Search State
   const [searchStatus, setSearchStatus] = useState('idle'); 
@@ -100,93 +409,102 @@ export default function App() {
   
   const fileInputRef = useRef(null);
 
-  // Load preferences from local storage on startup
+  // Initialize Firebase Auth Flow
   useEffect(() => {
-    const localPrefs = localStorage.getItem('anki_video_finder_prefs');
-    if (localPrefs) {
+    const initAuth = async () => {
       try {
-        const parsed = JSON.parse(localPrefs);
-        // Default URL safety check
-        if (!parsed.remoteDeckUrl || parsed.remoteDeckUrl.includes('default-app-id') || parsed.remoteDeckUrl.includes('anki-video-finder')) {
-          parsed.remoteDeckUrl = DEFAULT_DECK_URL;
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
         }
-        setPreferences(parsed);
-      } catch(e) {
-        console.error("Local preferences load failed", e);
+      } catch (e) {
+        console.error("Auth sign-in failed:", e);
       }
-    }
+    };
+    initAuth();
+    
+    const unsubscribe = onAuthStateChanged(auth, (authUser) => {
+      setUser(authUser);
+    });
+    return () => unsubscribe();
   }, []);
 
-  const savePreferencesLocally = (newPrefs) => {
-    setPreferences(newPrefs);
-    localStorage.setItem('anki_video_finder_prefs', JSON.stringify(newPrefs));
-    if (worker) {
-      worker.postMessage({ type: 'UPDATE_PREFERENCES', payload: newPrefs });
-    }
-    setSaveToast(true);
-    setTimeout(() => setSaveToast(false), 2000);
-  };
-
-  const handleSaveApiKey = (newKey) => {
-    setApiKey(newKey);
-    localStorage.setItem('anki_gemini_api_key', newKey);
-    setSaveToast(true);
-    setTimeout(() => setSaveToast(false), 2000);
-  };
-
-  // Initialize Web Worker with correct production url paths
+  // Fetch Firestore Cloud Preferences
   useEffect(() => {
-    const w = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+    if (!user) return;
+    const loadCloudPreferences = async () => {
+      try {
+        const prefDoc = await getDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'preferences', 'settings'));
+        if (prefDoc.exists()) {
+          const cloudData = prefDoc.data();
+          // Fallback configuration link check
+          if (!cloudData.remoteDeckUrl || cloudData.remoteDeckUrl.includes('default-app-id') || cloudData.remoteDeckUrl.includes('anki-video-finder')) {
+            cloudData.remoteDeckUrl = DEFAULT_DECK_URL;
+          }
+          setPreferences(cloudData);
+          if (worker) {
+            worker.postMessage({ type: 'UPDATE_PREFERENCES', payload: cloudData });
+          }
+          if (cloudData.remoteDeckUrl && csvStatus === 'idle') {
+            fetchRemoteDeck(cloudData.remoteDeckUrl);
+          }
+        } else {
+          // Cloud fallback default initialization
+          const defaultPrefs = {
+            examFocus: 'step1',
+            remoteDeckUrl: DEFAULT_DECK_URL,
+            enabledServices: {}
+          };
+          savePreferences(defaultPrefs);
+        }
+      } catch (err) {
+        console.error("Failed to fetch cloud configurations:", err);
+      }
+    };
+    loadCloudPreferences();
+  }, [user, worker]);
+
+  // Initialize Web Worker
+  useEffect(() => {
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    const w = new Worker(url);
     
     w.onmessage = (e) => {
       if (e.data.type === 'LOAD_COMPLETE') {
         if (e.data.count === 0) {
           setCsvStatus('error');
-          setErrorMsg('No valid cards found in the provided CSV file.');
+          setErrorMsg('No valid flashcards found in target dataset.');
         } else {
           setCsvStatus('ready');
           setCardCount(e.data.count);
           setStep1Resources(e.data.step1Resources || []);
           setStep2Resources(e.data.step2Resources || []);
           setErrorMsg('');
-          
-          // Determine existing local preferences to merge properly
-          const localPrefs = localStorage.getItem('anki_video_finder_prefs');
-          let parsedPrefs = {};
-          if (localPrefs) {
-            try {
-              parsedPrefs = JSON.parse(localPrefs);
-            } catch (err) {
-              console.error("Stale preferences parsing error:", err);
-            }
-          }
 
-          // Build fresh dynamic resource services lists
-          const dynamicServices = {};
+          // Merge live scanned resource deck services inside state 
+          const currentPrefs = preferencesRef.current;
+          const dynamicServices = { ...currentPrefs.enabledServices };
           const allRes = [...(e.data.step1Resources || []), ...(e.data.step2Resources || [])];
           
-          // Core medical high-yield priorities auto-enable by default
           const corePriorities = [
             'Boards & Beyond', 'Pathoma', 'Sketchy Micro', 'Sketchy Pharm', 
             'Sketchy Pathology', 'First Aid', 'Costanzo', 'Bootcamp', 'Low/High Yield'
           ];
 
           allRes.forEach(r => {
-            // Respect already stored user checkbox choices, otherwise default based on priority
-            if (parsedPrefs.enabledServices && parsedPrefs.enabledServices[r] !== undefined) {
-              dynamicServices[r] = parsedPrefs.enabledServices[r];
-            } else {
+            if (dynamicServices[r] === undefined) {
               dynamicServices[r] = corePriorities.includes(r);
             }
           });
-          
+
           const finalPrefs = {
-            examFocus: parsedPrefs.examFocus || 'step1',
-            remoteDeckUrl: parsedPrefs.remoteDeckUrl || DEFAULT_DECK_URL,
+            ...currentPrefs,
             enabledServices: dynamicServices
           };
 
-          savePreferencesLocally(finalPrefs);
+          savePreferences(finalPrefs);
         }
       } else if (e.data.type === 'SEARCH_COMPLETE') {
         processWorkerResults(e.data.results);
@@ -194,13 +512,18 @@ export default function App() {
         processWorkerSyllabusResults(e.data.results);
       } else if (e.data.type === 'ERROR') {
         setCsvStatus('error');
-        setErrorMsg('Data error: ' + e.data.payload);
+        setErrorMsg('Data parsing error: ' + e.data.payload);
       }
+    };
+    
+    w.onerror = (err) => {
+      setCsvStatus('error');
+      setErrorMsg('Background parser error: ' + err.message);
     };
     
     setWorker(w);
 
-    // Load Cached CSV on Startup
+    // Initial check for cached local storage files
     setCsvStatus('loading');
     loadFileFromDB()
       .then((cachedData) => {
@@ -216,15 +539,9 @@ export default function App() {
 
     return () => {
       w.terminate();
+      URL.revokeObjectURL(url);
     };
   }, []);
-
-  // Sync Remote Deck URL on configuration trigger
-  useEffect(() => {
-    if (preferences.remoteDeckUrl && csvStatus === 'idle') {
-      fetchRemoteDeck(preferences.remoteDeckUrl);
-    }
-  }, [preferences.remoteDeckUrl]);
 
   const fetchRemoteDeck = async (url) => {
     if (!url) return;
@@ -232,7 +549,7 @@ export default function App() {
     setErrorMsg('');
     try {
       const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+      if (!response.ok) throw new Error(`HTTP Error Status: ${response.status}`);
       const text = await response.text();
       await saveFileToDB(text);
       if (worker) {
@@ -241,7 +558,25 @@ export default function App() {
     } catch (err) {
       console.error(err);
       setCsvStatus('error');
-      setErrorMsg('Remote Deck Fetch Failed. Verify connection configuration or raw GitHub Link.');
+      setErrorMsg('Remote Deck Fetch Failed. Ensure link CORS policy is public (e.g., raw.githubusercontent.com or Gist RAW).');
+    }
+  };
+
+  const savePreferences = async (newPrefs) => {
+    if (!user) return;
+    setSyncingSettings(true);
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'preferences', 'settings'), newPrefs, { merge: true });
+      setPreferences(newPrefs);
+      if (worker) {
+        worker.postMessage({ type: 'UPDATE_PREFERENCES', payload: newPrefs });
+      }
+      setSaveToast(true);
+      setTimeout(() => setSaveToast(false), 3000);
+    } catch (err) {
+      console.error("Cloud synchronization failed:", err);
+    } finally {
+      setSyncingSettings(false);
     }
   };
 
@@ -257,12 +592,17 @@ export default function App() {
       const text = event.target.result;
       try {
         await saveFileToDB(text);
+        // Clean out any stale remote URL configuration so local config is primary
         const updatedPrefs = { ...preferences, remoteDeckUrl: '' };
-        savePreferencesLocally(updatedPrefs);
+        await savePreferences(updatedPrefs);
       } catch (err) {
-        console.error("Failed to save dataset locally:", err);
+        console.error("Failed to save local dataset configuration:", err);
       }
       worker.postMessage({ type: 'LOAD_CSV', payload: text });
+    };
+    reader.onerror = () => {
+      setCsvStatus('error');
+      setErrorMsg('Failed to read the file from disk.');
     };
     reader.readAsText(file);
   };
@@ -271,9 +611,9 @@ export default function App() {
     try {
       await clearFileFromDB();
       const updatedPrefs = { ...preferences, remoteDeckUrl: DEFAULT_DECK_URL };
-      savePreferencesLocally(updatedPrefs);
+      await savePreferences(updatedPrefs);
     } catch(e) {
-      console.error("Failed to flush local storage DB:", e);
+      console.error("Failed to flush IndexedDB:", e);
     }
     setCsvStatus('idle');
     setCardCount(0);
@@ -290,9 +630,6 @@ export default function App() {
   };
 
   const callGeminiJSON = async (systemInstruction, userPrompt, schema) => {
-    if (!apiKey) {
-      throw new Error("Missing Gemini API Key. Please add your key in Settings.");
-    }
     const delays = [1000, 2000, 4000, 8000, 16000];
     const payload = {
       contents: [{ parts: [{ text: userPrompt }] }],
@@ -302,6 +639,7 @@ export default function App() {
 
     for (let i = 0; i < 6; i++) {
       try {
+        // Updated to use the stable production gemini-2.5-flash model endpoint!
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -318,9 +656,6 @@ export default function App() {
   };
 
   const callGeminiText = async (systemInstruction, userPrompt) => {
-    if (!apiKey) {
-      throw new Error("Missing Gemini API Key. Please add your key in Settings.");
-    }
     const delays = [1000, 2000, 4000, 8000, 16000];
     const payload = {
       contents: [{ parts: [{ text: userPrompt }] }],
@@ -329,6 +664,7 @@ export default function App() {
 
     for (let i = 0; i < 6; i++) {
       try {
+        // Updated to use the stable production gemini-2.5-flash model endpoint!
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -455,10 +791,10 @@ export default function App() {
                                resourceName === 'SketchyPath' ? 'Sketchy Pathology' : 
                                resourceName;
 
-        // EXCLUDE 'Low/High Yield' tags from displaying in recommended video counts (it is not a video)
-        if (normalizedName === 'Low/High Yield') return;
+        // CRITICAL EXCLUSION: "Low/High Yield" is not a video! Do not sum or display here.
+        if (normalizedName === 'Low/High Yield' || normalizedName === 'Low/HighYield') return;
 
-        // Check configured checkboxes matching both raw and clean names
+        // Check if enabled in user configurations
         const isEnabled = preferences.enabledServices[normalizedName] === true || 
                           preferences.enabledServices[resourceName] === true;
 
@@ -479,9 +815,9 @@ export default function App() {
         .map(([name, count]) => ({ name, count }))
         .sort((a, b) => b.count - a.count); 
         
-      // NEW HIGH-YIELD THRESHOLD:
+      // NEW HIGH-YIELD THRESHOLD FILTERING
       // Show ALL videos containing 4 or more cards. 
-      // If there are fewer than 3 qualifying videos, fall back to show the top 3 videos for that category.
+      // If there are fewer than 3 qualifying videos, fall back to show the top 3 videos.
       const filtered = sorted.filter((item, index) => item.count >= 4 || index < 3);
       summary[resourceName] = filtered;
     });
@@ -489,8 +825,7 @@ export default function App() {
     return summary;
   };
 
-  // DERIVE ALL STUDY VIDEO SUMMARIES DIRECTLY DURING RENDER PHASE
-  // This completely bypasses stale state closures and guarantees live updates!
+  // Derive video summaries directly inside the render cycle to guarantee live updates
   const videoSummary = generateVideoSummaryData(results);
 
   const syllabusVideoSummaries = {};
@@ -672,7 +1007,6 @@ export default function App() {
       <div className="flex flex-wrap gap-2 mt-2">
         {Object.keys(item.extractedVideos).map(category => {
           const vids = item.extractedVideos[category];
-          // Normalization check so 'B&B' or 'Low/HighYield' match config values perfectly
           const normalizedCategory = category === 'B&B' ? 'Boards & Beyond' : 
                                      category === 'SketchyMicro' ? 'Sketchy Micro' : 
                                      category === 'SketchyPharm' ? 'Sketchy Pharm' : 
@@ -685,12 +1019,24 @@ export default function App() {
           // STRICT FILTER HIDE (If resource is not explicitly configured to true, skip render)
           if (!vids || vids.length === 0 || !isEnabled) return null;
 
-          return vids.map((vid, i) => (
-            <span key={`${category}-${i}`} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200 animate-fade-in">
-              <Video className="w-3 h-3 text-slate-400" />
-              <span className="font-semibold text-slate-900 ml-1">{normalizedCategory}:</span> {vid}
-            </span>
-          ));
+          return vids.map((vid, i) => {
+            // Render "Low/High Yield" with custom pill configuration (Exclude standard video icon)
+            if (normalizedCategory === 'Low/High Yield' || normalizedCategory === 'Low/HighYield') {
+              return (
+                <span key={`${category}-${i}`} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200 animate-fade-in shadow-sm">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                  <span>{vid}</span>
+                </span>
+              );
+            }
+
+            return (
+              <span key={`${category}-${i}`} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200 animate-fade-in">
+                <Video className="w-3 h-3 text-slate-400" />
+                <span className="font-semibold text-slate-900 ml-1">{normalizedCategory}:</span> {vid}
+              </span>
+            );
+          });
         })}
         
         <button
@@ -849,7 +1195,7 @@ export default function App() {
     getActiveSettingResources().forEach(r => {
       updated[r] = status;
     });
-    savePreferencesLocally({ ...preferences, enabledServices: updated });
+    savePreferences({ ...preferences, enabledServices: updated });
   };
 
   return (
@@ -858,7 +1204,8 @@ export default function App() {
       {/* Configuration Status Toast Notification */}
       {saveToast && (
         <div className="fixed bottom-5 right-5 z-50 bg-slate-900 text-white py-3 px-5 rounded-xl shadow-lg border border-slate-800 flex items-center gap-2 animate-bounce">
-          <span className="text-sm font-semibold">Settings Saved Locally!</span>
+          <Cloud className="w-5 h-5 text-emerald-400 animate-spin" />
+          <span className="text-sm font-semibold">Preferences saved to Cloud!</span>
         </div>
       )}
 
@@ -902,50 +1249,41 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         
-        {/* API Key Global Banner Warning */}
-        {!apiKey && (
-          <div className="bg-amber-50 border-2 border-amber-200 rounded-xl p-4 mb-6 shadow-sm">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-2">
-              <div className="flex items-center gap-3">
-                <Key className="w-8 h-8 text-amber-500 shrink-0" />
-                <div>
-                  <h4 className="font-bold text-amber-900 text-sm">Gemini API Key Required</h4>
-                  <p className="text-xs text-amber-700">AI features (syllabus parsing, summaries, pre-test quizzes) require an API key to run.</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  onClick={() => setShowKeyGuide(!showKeyGuide)}
-                  className="text-xs font-semibold bg-white text-amber-800 border border-amber-300 px-3 py-2 rounded-lg hover:bg-amber-100/50 transition-colors flex items-center gap-1"
-                >
-                  <HelpCircle className="w-3.5 h-3.5" />
-                  {showKeyGuide ? "Hide Tutorial" : "How to Get Key?"}
-                </button>
-                <button 
-                  onClick={() => setShowSettings(true)}
-                  className="text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg shadow-sm transition-colors"
-                >
-                  Add Key in Settings
-                </button>
+        {/* API Warning Banner and Tutorial */}
+        <div className="bg-amber-50 border-2 border-amber-200 rounded-xl p-4 mb-6 shadow-sm">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <Sparkles className="w-8 h-8 text-amber-500 shrink-0" />
+              <div>
+                <h4 className="font-bold text-amber-900 text-sm">Gemini Production-Ready Engine Active</h4>
+                <p className="text-xs text-amber-700">Equipped with automatic background scans. Toggle "Low/High Yield" inside Settings to enable Yield badges!</p>
               </div>
             </div>
-
-            {/* Expandable Key Guide */}
-            {showKeyGuide && (
-              <div className="border-t border-amber-200 p-4 bg-amber-50/50 text-xs text-amber-800 leading-relaxed space-y-2 animate-slide-down">
-                <p className="font-bold">Follow these steps to generate a free secure developer API key:</p>
-                <ol className="list-decimal pl-4 space-y-1">
-                  <li>Go to Google's official developer console: <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" className="underline font-bold hover:text-amber-900">Google AI Studio ↗</a>.</li>
-                  <li>Log in with any normal personal Google / Gmail account.</li>
-                  <li>Click the blue button at the top-left labeled **"Get API Key"**.</li>
-                  <li>Click **"Create API Key"**, choose a project (or select Create default project), and select **"Create API Key in new project"**.</li>
-                  <li>Copy the generated key string (which begins with **AIzaSy...**).</li>
-                  <li>Open **Settings** on this webpage, paste it into the field, and close Settings!</li>
-                </ol>
-              </div>
-            )}
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => setShowKeyGuide(!showKeyGuide)}
+                className="text-xs font-semibold bg-white text-amber-800 border border-amber-300 px-3 py-2 rounded-lg hover:bg-amber-100/50 transition-colors flex items-center gap-1"
+              >
+                <HelpCircle className="w-3.5 h-3.5" />
+                {showKeyGuide ? "Hide Tutorial" : "API Setup Guide?"}
+              </button>
+            </div>
           </div>
-        )}
+
+          {/* Expandable Key Guide */}
+          {showKeyGuide && (
+            <div className="border-t border-amber-200 p-4 bg-amber-50/50 text-xs text-amber-800 leading-relaxed space-y-2 animate-slide-down mt-3">
+              <p className="font-bold">How to retrieve your secure and completely free Google developer key:</p>
+              <ol className="list-decimal pl-4 space-y-1">
+                <li>Visit the official Google Console: <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" className="underline font-bold hover:text-amber-900">Google AI Studio ↗</a>.</li>
+                <li>Sign in securely with any basic personal Google Account.</li>
+                <li>Click the prominent blue button at the top-left corner: **"Get API Key"**.</li>
+                <li>Click **"Create API Key"**, select **"Create API Key in new project"** (free of charge).</li>
+                <li>Copy your key string (looks like `AIzaSy...`). Paste it directly inside Settings!</li>
+              </ol>
+            </div>
+          )}
+        </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           
@@ -954,8 +1292,8 @@ export default function App() {
             
             {/* Active Configurations Summary */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-              <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">
-                Active Configurations
+              <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                <Sliders className="w-4 h-4" /> Active Configurations
               </h2>
               <div className="space-y-3">
                 <div className="flex justify-between text-sm border-b pb-2 border-slate-100">
@@ -981,8 +1319,8 @@ export default function App() {
 
             {/* Resource Search Panel */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-              <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4">
-                Find Resources
+              <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4 flex items-center gap-2">
+                <Search className="w-4 h-4 animate-pulse" /> Find Resources
               </h2>
               <p className="text-sm text-slate-600 mb-3 leading-relaxed">
                 Enter normal text (e.g., hyperkalemia ECG) or paste raw syllabus learning objectives in <strong>"quotation marks"</strong> to parse categories automatically.
@@ -1021,7 +1359,7 @@ export default function App() {
           <div className="lg:col-span-8 space-y-6">
             
             {searchStatus === 'idle' && results.length === 0 && (
-              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-12 text-center text-slate-500">
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-12 text-center text-slate-500 animate-pulse">
                 <BookOpen className="w-12 h-12 text-slate-300 mx-auto mb-4" />
                 <h3 className="text-lg font-medium text-slate-900 mb-1">No Search Query Run</h3>
                 <p className="text-sm">Connect a remote Anki deck in "Settings" or upload your CSV locally to get started.</p>
@@ -1221,12 +1559,12 @@ export default function App() {
 
       {/* Configuration Settings Panel Modal */}
       {showSettings && (
-        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-end">
-          <div className="bg-white w-full max-w-lg h-full p-6 flex flex-col justify-between shadow-2xl relative animate-slide-left">
-            <div className="overflow-y-auto pr-2 flex-1">
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-end animate-fade-in">
+          <div className="bg-white w-full max-w-lg h-full p-6 flex flex-col justify-between shadow-2xl relative overflow-y-auto">
+            <div className="flex-1">
               <div className="flex items-center justify-between border-b pb-4 border-slate-200 mb-6">
                 <h2 className="text-xl font-extrabold text-slate-800 flex items-center gap-2">
-                  <Settings className="w-5 h-5 text-indigo-600" /> Configurations Settings
+                  <Sliders className="w-5 h-5 text-indigo-600 animate-spin" /> Configurations Settings
                 </h2>
                 <button 
                   onClick={() => setShowSettings(false)}
@@ -1238,29 +1576,7 @@ export default function App() {
 
               <div className="space-y-6">
                 
-                {/* Secure API Key input */}
-                <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1">
-                    <Key className="w-3.5 h-3.5 text-indigo-500" /> Gemini API Developer Key
-                  </label>
-                  <input 
-                    type="password"
-                    placeholder="Paste AI API key here..."
-                    value={apiKey}
-                    onChange={(e) => handleSaveApiKey(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white outline-none text-slate-700 font-mono shadow-inner"
-                  />
-                  <div className="bg-slate-50 border border-slate-100 p-2.5 rounded-lg mt-2 text-[11px] text-slate-500 leading-relaxed">
-                    <span className="font-bold block text-slate-700 mb-1">🔑 Quick Setup Guide:</span>
-                    <ol className="list-decimal pl-3 space-y-0.5">
-                      <li>Go to <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" className="underline font-semibold text-indigo-600 hover:text-indigo-800">Google AI Studio ↗</a>.</li>
-                      <li>Click blue button **"Get API Key"**.</li>
-                      <li>Select **"Create API Key in new project"** and paste the key here!</li>
-                    </ol>
-                  </div>
-                </div>
-
-                {/* Exam relevance toggle */}
+                {/* Exam relevance focus */}
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                     Exam Scope Focus
@@ -1269,7 +1585,7 @@ export default function App() {
                     {['step1', 'step2', 'both'].map((type) => (
                       <button
                         key={type}
-                        onClick={() => savePreferencesLocally({ ...preferences, examFocus: type })}
+                        onClick={() => savePreferences({ ...preferences, examFocus: type })}
                         className={`py-2 px-3 rounded-lg border text-sm font-semibold capitalize transition-all ${
                           preferences.examFocus === type 
                             ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
@@ -1282,14 +1598,14 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Enable Scanned Resource Services (Dynamically Populated) */}
+                {/* Filter dynamically scanned services */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">
-                      Filter Video Resources ({getActiveSettingResources().length} Scanned)
+                      Filter Scanned Resources ({getActiveSettingResources().length} scanned)
                     </label>
                     
-                    {/* BATCH TOGGLE UTILITY ACTIONS */}
+                    {/* BATCH SELECTOR TOGGLES */}
                     {getActiveSettingResources().length > 0 && (
                       <div className="flex gap-1.5">
                         <button
@@ -1309,11 +1625,11 @@ export default function App() {
                   </div>
                   
                   {getActiveSettingResources().length === 0 ? (
-                    <div className="p-4 rounded-lg bg-slate-50 text-xs text-slate-400 italic text-center border">
-                      Upload your Anki CSV database first to dynamically populate and filter video resources.
+                    <div className="p-4 rounded-lg bg-slate-50 text-xs text-slate-400 italic text-center border border-dashed">
+                      Upload your Anki CSV database first to dynamically populate and filter tag resources.
                     </div>
                   ) : (
-                    <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1 border border-slate-100 rounded-lg p-2 bg-slate-50/50">
+                    <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1 border border-slate-100 rounded-lg p-2 bg-slate-50/50 shadow-inner">
                       {getActiveSettingResources().map((service) => (
                         <label 
                           key={service}
@@ -1327,7 +1643,7 @@ export default function App() {
                                 ...preferences.enabledServices, 
                                 [service]: preferences.enabledServices[service] === true ? false : true
                               };
-                              savePreferencesLocally({ ...preferences, enabledServices: updatedServices });
+                              savePreferences({ ...preferences, enabledServices: updatedServices });
                             }}
                             className="rounded text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5"
                           />
@@ -1340,8 +1656,9 @@ export default function App() {
 
                 {/* Remote Deck URL sync */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-                    Remote Deck GitHub URL
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center justify-between">
+                    <span>Remote Deck GitHub URL</span>
+                    <span className="text-[10px] text-slate-400 font-normal lowercase">CORS raw file link</span>
                   </label>
                   <div className="flex gap-2">
                     <input 
@@ -1353,17 +1670,17 @@ export default function App() {
                     />
                     <button
                       onClick={() => {
-                        savePreferencesLocally(preferences);
+                        savePreferences(preferences);
                         fetchRemoteDeck(preferences.remoteDeckUrl);
                       }}
-                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-bold shrink-0 transition-all shadow-sm"
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-bold shrink-0 transition-all shadow-sm flex items-center gap-1"
                     >
-                      Sync Deck
+                      <RefreshCw className="w-3.5 h-3.5" /> Sync Deck
                     </button>
                   </div>
                 </div>
 
-                {/* Local CSV Upload */}
+                {/* Fallback Local CSV Upload */}
                 <div className="border-t pt-5 border-slate-100">
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                     Fallback Local File Upload
@@ -1388,9 +1705,11 @@ export default function App() {
               </div>
             </div>
 
-            <div className="border-t pt-4 border-slate-200 flex justify-between text-[11px] text-slate-400 font-medium shrink-0 mt-4">
-              <span>Standard Offline Mode Active</span>
-              <span>Data stored locally</span>
+            <div className="border-t pt-4 border-slate-200 flex items-center justify-between text-xs text-slate-400 font-medium shrink-0 mt-4">
+              <span className="flex items-center gap-1.5 text-emerald-600 bg-emerald-50 px-2 py-1 rounded-md border border-emerald-100">
+                <UserCheck className="w-3.5 h-3.5" /> Anonymous Authentication Verified
+              </span>
+              <span>Cloud Sync Engaged</span>
             </div>
           </div>
         </div>
