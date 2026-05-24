@@ -3,8 +3,11 @@ import {
   Upload, Search, Video, BookOpen, Layers, 
   CheckCircle, Loader2, FileText, AlertCircle, PlayCircle,
   Sparkles, BrainCircuit, MessageSquare, X, AlignLeft, Trash2,
-  ChevronDown, ChevronUp, Settings, Sliders, Key
+  ChevronDown, ChevronUp, Settings, Sliders, Key, HelpCircle, CheckSquare, Square
 } from 'lucide-react';
+
+// Your persistent, cloud-hosted default deck URL
+const DEFAULT_DECK_URL = "https://raw.githubusercontent.com/cheneri6/anki-database/refs/heads/main/AnKing_Step_Deck.csv";
 
 // --- INDEXED DB SERVICES FOR OFFLINE STORAGE ---
 const initDB = () => {
@@ -63,6 +66,7 @@ export default function App() {
   // Custom API Key and Settings State
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('anki_gemini_api_key') || "");
   const [showSettings, setShowSettings] = useState(false);
+  const [showKeyGuide, setShowKeyGuide] = useState(false);
   
   // Dynamic resource sets loaded directly from card tags scanning
   const [step1Resources, setStep1Resources] = useState([]);
@@ -70,8 +74,8 @@ export default function App() {
   
   const [preferences, setPreferences] = useState({
     examFocus: 'step1', 
-    enabledServices: {}, // Populated dynamically
-    remoteDeckUrl: '' 
+    enabledServices: {}, // Populated dynamically during deck upload
+    remoteDeckUrl: DEFAULT_DECK_URL 
   });
   const [saveToast, setSaveToast] = useState(false);
   
@@ -105,6 +109,10 @@ export default function App() {
     if (localPrefs) {
       try {
         const parsed = JSON.parse(localPrefs);
+        // Default URL safety check
+        if (!parsed.remoteDeckUrl) {
+          parsed.remoteDeckUrl = DEFAULT_DECK_URL;
+        }
         setPreferences(parsed);
       } catch(e) {
         console.error("Local preferences load failed", e);
@@ -145,27 +153,43 @@ export default function App() {
           setStep2Resources(e.data.step2Resources || []);
           setErrorMsg('');
           
-          // Auto-enable newly scanned services by default
-          const defaultEnabled = {};
-          const allRes = [...(e.data.step1Resources || []), ...(e.data.step2Resources || [])];
-          allRes.forEach(r => {
-            defaultEnabled[r] = true;
-          });
-          
+          // Determine existing local preferences to merge properly
           const localPrefs = localStorage.getItem('anki_video_finder_prefs');
+          let parsedPrefs = {};
           if (localPrefs) {
             try {
-              const parsed = JSON.parse(localPrefs);
-              setPreferences(prev => ({
-                ...parsed,
-                enabledServices: { ...defaultEnabled, ...parsed.enabledServices }
-              }));
-            } catch(err) {
-              setPreferences(prev => ({ ...prev, enabledServices: defaultEnabled }));
+              parsedPrefs = JSON.parse(localPrefs);
+            } catch (err) {
+              console.error("Stale preferences parsing error:", err);
             }
-          } else {
-            setPreferences(prev => ({ ...prev, enabledServices: defaultEnabled }));
           }
+
+          // Build fresh dynamic resource services lists
+          const dynamicServices = {};
+          const allRes = [...(e.data.step1Resources || []), ...(e.data.step2Resources || [])];
+          
+          // Core medical high-yield priorities auto-enable by default
+          const corePriorities = [
+            'Boards & Beyond', 'Pathoma', 'Sketchy Micro', 'Sketchy Pharm', 
+            'Sketchy Pathology', 'First Aid', 'Costanzo', 'Bootcamp', 'Low/High Yield'
+          ];
+
+          allRes.forEach(r => {
+            // Respect already stored user checkbox choices, otherwise default based on priority
+            if (parsedPrefs.enabledServices && parsedPrefs.enabledServices[r] !== undefined) {
+              dynamicServices[r] = parsedPrefs.enabledServices[r];
+            } else {
+              dynamicServices[r] = corePriorities.includes(r);
+            }
+          });
+          
+          const finalPrefs = {
+            examFocus: parsedPrefs.examFocus || 'step1',
+            remoteDeckUrl: parsedPrefs.remoteDeckUrl || DEFAULT_DECK_URL,
+            enabledServices: dynamicServices
+          };
+
+          savePreferencesLocally(finalPrefs);
         }
       } else if (e.data.type === 'SEARCH_COMPLETE') {
         processWorkerResults(e.data.results);
@@ -220,7 +244,7 @@ export default function App() {
     } catch (err) {
       console.error(err);
       setCsvStatus('error');
-      setErrorMsg('Remote Deck Fetch Failed. Verify connection configuration or raw Gist Link.');
+      setErrorMsg('Remote Deck Fetch Failed. Verify connection configuration or raw GitHub Link.');
     }
   };
 
@@ -249,7 +273,7 @@ export default function App() {
   const handleClearData = async () => {
     try {
       await clearFileFromDB();
-      const updatedPrefs = { ...preferences, remoteDeckUrl: '' };
+      const updatedPrefs = { ...preferences, remoteDeckUrl: DEFAULT_DECK_URL };
       savePreferencesLocally(updatedPrefs);
     } catch(e) {
       console.error("Failed to flush local storage DB:", e);
@@ -283,7 +307,7 @@ export default function App() {
 
     for (let i = 0; i < 6; i++) {
       try {
-        // Updated to use the stable production gemini-2.5-flash model endpoint!
+        // Stable production Gemini Flash Model
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -311,7 +335,7 @@ export default function App() {
 
     for (let i = 0; i < 6; i++) {
       try {
-        // Updated to use the stable production gemini-2.5-flash model endpoint!
+        // Stable production Gemini Flash Model
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -433,8 +457,8 @@ export default function App() {
 
     flatFormattedCards.forEach(item => {
       Object.entries(item.extractedVideos).forEach(([resourceName, videosList]) => {
-        // Strict dynamically scanned enabled resource validation
-        if (preferences.enabledServices[resourceName] !== false) {
+        // STRICT FILTER MATCHING (Only show resources explicitly configured to true)
+        if (preferences.enabledServices[resourceName] === true) {
           if (!counts[resourceName]) {
             counts[resourceName] = {};
           }
@@ -639,7 +663,8 @@ export default function App() {
       <div className="flex flex-wrap gap-2 mt-2">
         {Object.keys(item.extractedVideos).map(category => {
           const vids = item.extractedVideos[category];
-          if (!vids || vids.length === 0 || preferences.enabledServices[category] === false) return null;
+          // STRICT VISUAL SHIELD FOR EXCLUDED PREFERENCES
+          if (!vids || vids.length === 0 || preferences.enabledServices[category] !== true) return null;
           return vids.map((vid, i) => (
             <span key={`${category}-${i}`} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200 animate-fade-in">
               <Video className="w-3 h-3 text-slate-400" />
@@ -740,7 +765,7 @@ export default function App() {
         {(!title || isOpen) && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-fade-in">
             {Object.entries(summaryData).map(([category, vids]) => {
-              if (vids.length === 0) return null;
+              if (vids.length === 0 || preferences.enabledServices[category] !== true) return null;
               return (
                 <CollapsibleCategory 
                   key={category} 
@@ -791,6 +816,15 @@ export default function App() {
     if (preferences.examFocus === 'step1') return step1Resources;
     if (preferences.examFocus === 'step2') return step2Resources;
     return Array.from(new Set([...step1Resources, ...step2Resources])).sort();
+  };
+
+  // Check or uncheck all dynamically mapped resources
+  const setAllResourcesSelected = (status) => {
+    const updated = { ...preferences.enabledServices };
+    getActiveSettingResources().forEach(r => {
+      updated[r] = status;
+    });
+    savePreferencesLocally({ ...preferences, enabledServices: updated });
   };
 
   return (
@@ -845,30 +879,46 @@ export default function App() {
         
         {/* API Key Global Banner Warning */}
         {!apiKey && (
-          <div className="bg-amber-50 border-2 border-amber-200 rounded-xl p-4 mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm animate-pulse">
-            <div className="flex items-center gap-3">
-              <Key className="w-8 h-8 text-amber-500 shrink-0" />
-              <div>
-                <h4 className="font-bold text-amber-900 text-sm">Gemini API Key Required</h4>
-                <p className="text-xs text-amber-700">AI features (syllabus parsing, summaries, pre-test quizzes) require an API key to run.</p>
+          <div className="bg-amber-50 border-2 border-amber-200 rounded-xl p-4 mb-6 shadow-sm">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-2">
+              <div className="flex items-center gap-3">
+                <Key className="w-8 h-8 text-amber-500 shrink-0" />
+                <div>
+                  <h4 className="font-bold text-amber-900 text-sm">Gemini API Key Required</h4>
+                  <p className="text-xs text-amber-700">AI features (syllabus parsing, summaries, pre-test quizzes) require an API key to run.</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => setShowKeyGuide(!showKeyGuide)}
+                  className="text-xs font-semibold bg-white text-amber-800 border border-amber-300 px-3 py-2 rounded-lg hover:bg-amber-100/50 transition-colors flex items-center gap-1"
+                >
+                  <HelpCircle className="w-3.5 h-3.5" />
+                  {showKeyGuide ? "Hide Tutorial" : "How to Get Key?"}
+                </button>
+                <button 
+                  onClick={() => setShowSettings(true)}
+                  className="text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg shadow-sm transition-colors"
+                >
+                  Add Key in Settings
+                </button>
               </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <a 
-                href="https://aistudio.google.com/" 
-                target="_blank" 
-                rel="noreferrer" 
-                className="text-xs font-semibold bg-white text-amber-800 border border-amber-300 px-3 py-2 rounded-lg hover:bg-amber-100/50 transition-colors"
-              >
-                Get Free Key ↗
-              </a>
-              <button 
-                onClick={() => setShowSettings(true)}
-                className="text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg shadow-sm transition-colors"
-              >
-                Add Key in Settings
-              </button>
-            </div>
+
+            {/* Expandable Key Guide */}
+            {showKeyGuide && (
+              <div className="border-t border-amber-200 p-4 bg-amber-50/50 text-xs text-amber-800 leading-relaxed space-y-2 animate-slide-down">
+                <p className="font-bold">Follow these steps to generate a free secure developer API key:</p>
+                <ol className="list-decimal pl-4 space-y-1">
+                  <li>Go to Google's official developer console: <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" className="underline font-bold hover:text-amber-900">Google AI Studio ↗</a>.</li>
+                  <li>Log in with any normal personal Google / Gmail account.</li>
+                  <li>Click the blue button at the top-left labeled **"Get API Key"**.</li>
+                  <li>Click **"Create API Key"**, choose a project (or select Create default project), and select **"Create API Key in new project"**.</li>
+                  <li>Copy the generated key string (which begins with **AIzaSy...**).</li>
+                  <li>Open **Settings** on this webpage, paste it into the field, and close Settings!</li>
+                </ol>
+              </div>
+            )}
           </div>
         )}
 
@@ -1175,9 +1225,14 @@ export default function App() {
                     onChange={(e) => handleSaveApiKey(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white outline-none text-slate-700 font-mono shadow-inner"
                   />
-                  <span className="text-[10px] text-slate-400 leading-tight block mt-1.5">
-                    Your key is stored 100% locally on your browser and is never sent to any third party server other than Google's secure APIs.
-                  </span>
+                  <div className="bg-slate-50 border border-slate-100 p-2.5 rounded-lg mt-2 text-[11px] text-slate-500 leading-relaxed">
+                    <span className="font-bold block text-slate-700 mb-1">🔑 Quick Setup Guide:</span>
+                    <ol className="list-decimal pl-3 space-y-0.5">
+                      <li>Go to <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" className="underline font-semibold text-indigo-600 hover:text-indigo-800">Google AI Studio ↗</a>.</li>
+                      <li>Click blue button **"Get API Key"**.</li>
+                      <li>Select **"Create API Key in new project"** and paste the key here!</li>
+                    </ol>
+                  </div>
                 </div>
 
                 {/* Exam relevance toggle */}
@@ -1204,9 +1259,29 @@ export default function App() {
 
                 {/* Enable Scanned Resource Services (Dynamically Populated) */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-                    Filter Video Resources ({getActiveSettingResources().length} Scanned)
-                  </label>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">
+                      Filter Video Resources ({getActiveSettingResources().length} Scanned)
+                    </label>
+                    
+                    {/* BATCH TOGGLE UTILITY ACTIONS */}
+                    {getActiveSettingResources().length > 0 && (
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => setAllResourcesSelected(true)}
+                          className="text-[10px] font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded transition-all"
+                        >
+                          Check All
+                        </button>
+                        <button
+                          onClick={() => setAllResourcesSelected(false)}
+                          className="text-[10px] font-bold text-slate-500 bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded transition-all"
+                        >
+                          Uncheck All
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   
                   {getActiveSettingResources().length === 0 ? (
                     <div className="p-4 rounded-lg bg-slate-50 text-xs text-slate-400 italic text-center border">
@@ -1221,11 +1296,11 @@ export default function App() {
                         >
                           <input 
                             type="checkbox"
-                            checked={preferences.enabledServices[service] !== false}
+                            checked={preferences.enabledServices[service] === true}
                             onChange={() => {
                               const updatedServices = { 
                                 ...preferences.enabledServices, 
-                                [service]: preferences.enabledServices[service] === false ? true : false 
+                                [service]: preferences.enabledServices[service] === true ? false : true
                               };
                               savePreferencesLocally({ ...preferences, enabledServices: updatedServices });
                             }}
