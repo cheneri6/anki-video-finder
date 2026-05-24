@@ -1,317 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Upload, Search, Video, BookOpen, Layers, 
-  CheckCircle, Loader2, FileText, AlertCircle, PlayCircle,
+  Search, Video, BookOpen, Layers, 
+  CheckCircle, Loader2, PlayCircle,
   Sparkles, BrainCircuit, MessageSquare, X, AlignLeft, Trash2,
-  ChevronDown, ChevronUp, Settings, Sliders, Database, Link, Save, UserCheck, Cloud, RefreshCw, HelpCircle
+  ChevronDown, ChevronUp, Settings, Sliders, Key, HelpCircle
 } from 'lucide-react';
 
-// Firebase Modular Imports
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc } from 'firebase/firestore';
-
-// Initialize Firebase configuration dynamically using environment flags
-const firebaseConfig = JSON.parse(__firebase_config);
-const firebaseApp = initializeApp(firebaseConfig);
-const auth = getAuth(firebaseApp);
-const db = getFirestore(firebaseApp);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-
-const apiKey = ""; // Injected by the environment runtime
-
-// Default deck hosted securely on GitHub
 const DEFAULT_DECK_URL = "https://raw.githubusercontent.com/cheneri6/anki-database/refs/heads/main/AnKing_Step_Deck.csv";
 
-// --- INLINE WEB WORKER (DYNAMICAL SCANS ALL DECK TAG CATEGORIES) ---
-const workerCode = `
-  let cards = [];
-  let userPreferences = {
-    examFocus: 'step1', 
-    enabledServices: {}
-  };
-
-  function detectDelimiter(text) {
-     const lines = text.split('\\n').slice(0, 50);
-     let commaCount = 0;
-     let tabCount = 0;
-     for (let i = 0; i < lines.length; i++) {
-        const l = lines[i];
-        if (!l.startsWith('#')) {
-            commaCount += (l.match(/,/g) || []).length;
-            tabCount += (l.match(/\\t/g) || []).length;
-        }
-     }
-     return tabCount > commaCount ? '\\t' : ',';
-  }
-
-  function parseData(text) {
-    const delimiter = detectDelimiter(text);
-    const result = [];
-    let row = [];
-    let startValue = 0;
-    let inQuotes = false;
-    
-    for (let i = 0; i < text.length; i++) {
-      const c = text[i];
-      
-      if (c === '"') {
-        inQuotes = !inQuotes;
-      } else if (c === delimiter && !inQuotes) {
-        let val = text.substring(startValue, i);
-        if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) {
-          val = val.substring(1, val.length - 1).replace(/""/g, '"');
-        }
-        row.push(val);
-        startValue = i + 1;
-      } else if (c === '\\n' && !inQuotes) {
-        let val = text.substring(startValue, i);
-        if (val.length > 0 && val.charCodeAt(val.length - 1) === 13) { 
-            val = val.substring(0, val.length - 1);
-        }
-        if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) {
-          val = val.substring(1, val.length - 1).replace(/""/g, '"');
-        }
-        row.push(val);
-        if (row.length > 0) result.push(row);
-        row = [];
-        startValue = i + 1;
-      }
-    }
-    if (startValue < text.length) {
-      let val = text.substring(startValue);
-      if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) {
-        val = val.substring(1, val.length - 1).replace(/""/g, '"');
-      }
-      row.push(val);
-      result.push(row);
-    }
-    return result;
-  }
-
-  function cleanResourceName(raw) {
-    const resourceMap = {
-      'B&B': 'Boards & Beyond',
-      'SketchyMicro': 'Sketchy Micro',
-      'SketchyPharm': 'Sketchy Pharm',
-      'SketchyPath': 'Sketchy Pathology',
-      'SketchyAnatomy': 'Sketchy Anatomy',
-      'SketchyBiochem': 'Sketchy Biochem',
-      'SketchyBiostats/Epidemiology': 'Sketchy Biostats/Epidemiology',
-      'SketchyImmunology': 'Sketchy Immunology',
-      'SketchyPhysiology': 'Sketchy Physiology',
-      'DirtyMedicine': 'Dirty Medicine',
-      'FirstAid': 'First Aid',
-      'NinjaNerd': 'Ninja Nerd',
-      'DivineIntervention': 'Divine Intervention',
-      'SketchyFM': 'Sketchy Family Medicine',
-      'SketchyIM': 'Sketchy Internal Medicine',
-      'SketchyNeurology': 'Sketchy Neurology',
-      'SketchyOBGYN': 'Sketchy OBGYN',
-      'SketchyPeds': 'Sketchy Pediatrics',
-      'SketchyPsych': 'Sketchy Psychiatry',
-      'SketchySurgery': 'Sketchy Surgery',
-      'Low/HighYield': 'Low/High Yield',
-      'USMLERx': 'USMLE Rx',
-      'OME': 'OnlineMedEd',
-      'OME_banner': 'OnlineMedEd Banner',
-      'Resources_by_rotation': 'Resources by Rotation'
-    };
-    return resourceMap[raw] || raw;
-  }
-
-  self.onmessage = function(e) {
-    const { type, payload } = e.data;
-    
-    if (type === 'LOAD_CSV') {
-      try {
-        const rows = parseData(payload);
-        cards = [];
-        
-        let tagsColIdx = -1;
-        for (let i = 0; i < Math.min(20, rows.length); i++) {
-          if (rows[i][0] && typeof rows[i][0] === 'string' && rows[i][0].startsWith('#tags column:')) {
-            const colNum = parseInt(rows[i][0].split(':')[1], 10);
-            if (!isNaN(colNum)) tagsColIdx = colNum - 1;
-            break;
-          }
-        }
-        
-        if (tagsColIdx === -1) {
-          for (let i = 0; i < Math.min(50, rows.length); i++) {
-            const r = rows[i];
-            if (r[0] && typeof r[0] === 'string' && r[0].startsWith('#')) continue;
-            for (let j = 0; j < r.length; j++) {
-              if (r[j] && typeof r[j] === 'string' && r[j].includes('#AK_')) {
-                tagsColIdx = j;
-                break;
-              }
-            }
-            if (tagsColIdx !== -1) break;
-          }
-        }
-
-        let discoveredStep1Resources = new Set();
-        let discoveredStep2Resources = new Set();
-        
-        for (let i = 0; i < rows.length; i++) {
-          const r = rows[i];
-          if (r.length < 2 || (r[0] && typeof r[0] === 'string' && r[0].startsWith('#'))) continue; 
-          
-          let tags = '';
-          if (tagsColIdx !== -1 && tagsColIdx < r.length) {
-            tags = r[tagsColIdx];
-          } else {
-            tags = r[r.length - 1] || ''; 
-          }
-
-          const tagList = tags.split(' ');
-          tagList.forEach(t => {
-            if (!t) return;
-            const parts = t.split('::');
-            
-            const step1Idx = parts.findIndex(p => p.toLowerCase().includes('step1'));
-            if (step1Idx !== -1 && step1Idx + 1 < parts.length) {
-              let res = parts[step1Idx + 1].replace(/^#/, '');
-              if (res && !res.startsWith('^') && !res.startsWith('!') && res !== 'Subjects') {
-                discoveredStep1Resources.add(cleanResourceName(res));
-              }
-            }
-            
-            const step2Idx = parts.findIndex(p => p.toLowerCase().includes('step2'));
-            if (step2Idx !== -1 && step2Idx + 1 < parts.length) {
-              let res = parts[step2Idx + 1].replace(/^#/, '');
-              if (res && !res.startsWith('^') && !res.startsWith('!') && res !== 'Subjects') {
-                discoveredStep2Resources.add(cleanResourceName(res));
-              }
-            }
-          });
-
-          cards.push({
-            text: r[0] || '',
-            extra: r[1] || '',
-            tags: tags || ''
-          });
-        }
-        self.postMessage({ 
-          type: 'LOAD_COMPLETE', 
-          count: cards.length,
-          step1Resources: Array.from(discoveredStep1Resources).sort(),
-          step2Resources: Array.from(discoveredStep2Resources).sort()
-        });
-      } catch (error) {
-        self.postMessage({ type: 'ERROR', payload: error.message });
-      }
-    } 
-    
-    else if (type === 'UPDATE_PREFERENCES') {
-      userPreferences = payload;
-    }
-    
-    else if (type === 'SEARCH') {
-      const { conceptGroups } = payload;
-      let allMatches = [];
-      const lowerConceptGroups = conceptGroups.map(group => group.map(k => k.toLowerCase()));
-      
-      for (let i = 0; i < cards.length; i++) {
-        const c = cards[i];
-        
-        const hasStep1Tag = c.tags.toLowerCase().includes('step1');
-        const hasStep2Tag = c.tags.toLowerCase().includes('step2');
-        
-        if (userPreferences.examFocus === 'step1' && !hasStep1Tag && hasStep2Tag) continue;
-        if (userPreferences.examFocus === 'step2' && !hasStep2Tag && hasStep1Tag) continue;
-
-        let score = 0;
-        let matchCount = 0;
-        const searchPool = (c.text + " " + c.extra).toLowerCase();
-        
-        for (let j = 0; j < lowerConceptGroups.length; j++) {
-          let groupMatched = false;
-          const group = lowerConceptGroups[j];
-          for (let k = 0; k < group.length; k++) {
-            const term = group[k];
-            if (searchPool.includes(term)) {
-              groupMatched = true;
-              score += term.length;
-            }
-          }
-          if (groupMatched) matchCount++;
-        }
-        
-        if (matchCount > 0) {
-          allMatches.push({ card: c, score, matchCount });
-        }
-      }
-      
-      allMatches.sort((a, b) => {
-        if (b.matchCount !== a.matchCount) return b.matchCount - a.matchCount;
-        return b.score - a.score;
-      });
-
-      if (allMatches.length > 0) {
-         const highestMatchCount = allMatches[0].matchCount;
-         const topTier = allMatches.filter(m => m.matchCount === highestMatchCount);
-         self.postMessage({ type: 'SEARCH_COMPLETE', results: topTier.slice(0, 50) });
-      } else {
-         self.postMessage({ type: 'SEARCH_COMPLETE', results: [] });
-      }
-    }
-    
-    else if (type === 'SEARCH_SYLLABUS') {
-      const { categories } = payload;
-      let syllabusResults = {};
-
-      categories.forEach(cat => {
-        let catMatches = new Map();
-
-        cat.searchQueries.forEach(query => {
-           const lowerConceptGroups = query.requiredConcepts.map(group => group.map(k => k.toLowerCase()));
-           
-           for (let i = 0; i < cards.length; i++) {
-              const c = cards[i];
-              
-              const hasStep1Tag = c.tags.toLowerCase().includes('step1');
-              const hasStep2Tag = c.tags.toLowerCase().includes('step2');
-              if (userPreferences.examFocus === 'step1' && !hasStep1Tag && hasStep2Tag) continue;
-              if (userPreferences.examFocus === 'step2' && !hasStep2Tag && hasStep1Tag) continue;
-
-              let matchCount = 0;
-              const searchPool = (c.text + " " + c.extra).toLowerCase();
-
-              for (let j = 0; j < lowerConceptGroups.length; j++) {
-                let groupMatched = false;
-                const group = lowerConceptGroups[j];
-                for (let k = 0; k < group.length; k++) {
-                  if (searchPool.includes(group[k])) {
-                    groupMatched = true;
-                    break;
-                  }
-                }
-                if (groupMatched) matchCount++;
-              }
-
-              if (matchCount === lowerConceptGroups.length && lowerConceptGroups.length > 0) {
-                 if (!catMatches.has(c.text)) {
-                    catMatches.set(c.text, { card: c, score: 1 });
-                 }
-              }
-           }
-        });
-
-        syllabusResults[cat.name] = Array.from(catMatches.values()).slice(0, 40);
-      });
-
-      self.postMessage({ type: 'SEARCH_SYLLABUS_COMPLETE', results: syllabusResults });
-    }
-    
-    else if (type === 'CLEAR_CSV') {
-      cards = [];
-    }
-  };
-`;
-
-// --- INDEXED DB SERVICES ---
+// --- INDEXED DB SERVICES FOR OFFLINE STORAGE ---
 const initDB = () => {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open('AnkiDB', 1);
@@ -361,31 +58,25 @@ const clearFileFromDB = async () => {
 
 export default function App() {
   const [worker, setWorker] = useState(null);
-  const [user, setUser] = useState(null);
   const [csvStatus, setCsvStatus] = useState('idle'); 
   const [cardCount, setCardCount] = useState(0);
   const [prompt, setPrompt] = useState('');
   
-  // Custom Settings & State
+  // Custom API Key and Settings State
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('anki_gemini_api_key') || "");
   const [showSettings, setShowSettings] = useState(false);
   const [showKeyGuide, setShowKeyGuide] = useState(false);
-
+  
+  // Dynamic resource sets loaded directly from card tags scanning
   const [step1Resources, setStep1Resources] = useState([]);
   const [step2Resources, setStep2Resources] = useState([]);
   
   const [preferences, setPreferences] = useState({
     examFocus: 'step1', 
-    enabledServices: {}, // Populated dynamically on database scanning
+    enabledServices: {}, // Populated dynamically during deck upload
     remoteDeckUrl: DEFAULT_DECK_URL 
   });
-  
-  const [syncingSettings, setSyncingSettings] = useState(false);
   const [saveToast, setSaveToast] = useState(false);
-
-  const preferencesRef = useRef(preferences);
-  useEffect(() => {
-    preferencesRef.current = preferences;
-  }, [preferences]);
   
   // Search State
   const [searchStatus, setSearchStatus] = useState('idle'); 
@@ -409,83 +100,69 @@ export default function App() {
   
   const fileInputRef = useRef(null);
 
-  // Initialize Firebase Auth Flow
+  // Load preferences from local storage on startup
   useEffect(() => {
-    const initAuth = async () => {
+    const localPrefs = localStorage.getItem('anki_video_finder_prefs');
+    if (localPrefs) {
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
+        const parsed = JSON.parse(localPrefs);
+        // Default URL safety check
+        if (!parsed.remoteDeckUrl || parsed.remoteDeckUrl.includes('default-app-id') || parsed.remoteDeckUrl.includes('anki-video-finder')) {
+          parsed.remoteDeckUrl = DEFAULT_DECK_URL;
         }
-      } catch (e) {
-        console.error("Auth sign-in failed:", e);
+        setPreferences(parsed);
+      } catch(e) {
+        console.error("Local preferences load failed", e);
       }
-    };
-    initAuth();
-    
-    const unsubscribe = onAuthStateChanged(auth, (authUser) => {
-      setUser(authUser);
-    });
-    return () => unsubscribe();
+    }
   }, []);
 
-  // Fetch Firestore Cloud Preferences
-  useEffect(() => {
-    if (!user) return;
-    const loadCloudPreferences = async () => {
-      try {
-        const prefDoc = await getDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'preferences', 'settings'));
-        if (prefDoc.exists()) {
-          const cloudData = prefDoc.data();
-          // Fallback configuration link check
-          if (!cloudData.remoteDeckUrl || cloudData.remoteDeckUrl.includes('default-app-id') || cloudData.remoteDeckUrl.includes('anki-video-finder')) {
-            cloudData.remoteDeckUrl = DEFAULT_DECK_URL;
-          }
-          setPreferences(cloudData);
-          if (worker) {
-            worker.postMessage({ type: 'UPDATE_PREFERENCES', payload: cloudData });
-          }
-          if (cloudData.remoteDeckUrl && csvStatus === 'idle') {
-            fetchRemoteDeck(cloudData.remoteDeckUrl);
-          }
-        } else {
-          // Cloud fallback default initialization
-          const defaultPrefs = {
-            examFocus: 'step1',
-            remoteDeckUrl: DEFAULT_DECK_URL,
-            enabledServices: {}
-          };
-          savePreferences(defaultPrefs);
-        }
-      } catch (err) {
-        console.error("Failed to fetch cloud configurations:", err);
-      }
-    };
-    loadCloudPreferences();
-  }, [user, worker]);
+  const savePreferencesLocally = (newPrefs) => {
+    setPreferences(newPrefs);
+    localStorage.setItem('anki_video_finder_prefs', JSON.stringify(newPrefs));
+    if (worker) {
+      worker.postMessage({ type: 'UPDATE_PREFERENCES', payload: newPrefs });
+    }
+    setSaveToast(true);
+    setTimeout(() => setSaveToast(false), 2000);
+  };
+
+  const handleSaveApiKey = (newKey) => {
+    setApiKey(newKey);
+    localStorage.setItem('anki_gemini_api_key', newKey);
+    setSaveToast(true);
+    setTimeout(() => setSaveToast(false), 2000);
+  };
 
   // Initialize Web Worker
   useEffect(() => {
-    const blob = new Blob([workerCode], { type: 'application/javascript' });
-    const url = URL.createObjectURL(blob);
-    const w = new Worker(url);
+    const w = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
     
     w.onmessage = (e) => {
       if (e.data.type === 'LOAD_COMPLETE') {
         if (e.data.count === 0) {
           setCsvStatus('error');
-          setErrorMsg('No valid flashcards found in target dataset.');
+          setErrorMsg('No valid cards found in the provided CSV file.');
         } else {
           setCsvStatus('ready');
           setCardCount(e.data.count);
           setStep1Resources(e.data.step1Resources || []);
           setStep2Resources(e.data.step2Resources || []);
           setErrorMsg('');
+          
+          // Determine existing local preferences to merge properly
+          const localPrefs = localStorage.getItem('anki_video_finder_prefs');
+          let parsedPrefs = {};
+          if (localPrefs) {
+            try {
+              parsedPrefs = JSON.parse(localPrefs);
+            } catch (err) {
+              console.error("Stale preferences parsing error:", err);
+            }
+          }
 
-          // Merge live scanned resource deck services inside state 
-          const currentPrefs = preferencesRef.current;
-          const dynamicServices = { ...currentPrefs.enabledServices };
+          // Build fresh dynamic resource services lists
+          const dynamicServices = {};
           const allRes = [...(e.data.step1Resources || []), ...(e.data.step2Resources || [])];
           
           const corePriorities = [
@@ -494,17 +171,21 @@ export default function App() {
           ];
 
           allRes.forEach(r => {
-            if (dynamicServices[r] === undefined) {
+            // Respect already stored user checkbox choices, otherwise default based on priority
+            if (parsedPrefs.enabledServices && parsedPrefs.enabledServices[r] !== undefined) {
+              dynamicServices[r] = parsedPrefs.enabledServices[r];
+            } else {
               dynamicServices[r] = corePriorities.includes(r);
             }
           });
-
+          
           const finalPrefs = {
-            ...currentPrefs,
+            examFocus: parsedPrefs.examFocus || 'step1',
+            remoteDeckUrl: parsedPrefs.remoteDeckUrl || DEFAULT_DECK_URL,
             enabledServices: dynamicServices
           };
 
-          savePreferences(finalPrefs);
+          savePreferencesLocally(finalPrefs);
         }
       } else if (e.data.type === 'SEARCH_COMPLETE') {
         processWorkerResults(e.data.results);
@@ -512,18 +193,12 @@ export default function App() {
         processWorkerSyllabusResults(e.data.results);
       } else if (e.data.type === 'ERROR') {
         setCsvStatus('error');
-        setErrorMsg('Data parsing error: ' + e.data.payload);
+        setErrorMsg('Data error: ' + e.data.payload);
       }
-    };
-    
-    w.onerror = (err) => {
-      setCsvStatus('error');
-      setErrorMsg('Background parser error: ' + err.message);
     };
     
     setWorker(w);
 
-    // Initial check for cached local storage files
     setCsvStatus('loading');
     loadFileFromDB()
       .then((cachedData) => {
@@ -539,9 +214,14 @@ export default function App() {
 
     return () => {
       w.terminate();
-      URL.revokeObjectURL(url);
     };
   }, []);
+
+  useEffect(() => {
+    if (preferences.remoteDeckUrl && csvStatus === 'idle') {
+      fetchRemoteDeck(preferences.remoteDeckUrl);
+    }
+  }, [preferences.remoteDeckUrl]);
 
   const fetchRemoteDeck = async (url) => {
     if (!url) return;
@@ -549,7 +229,7 @@ export default function App() {
     setErrorMsg('');
     try {
       const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP Error Status: ${response.status}`);
+      if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
       const text = await response.text();
       await saveFileToDB(text);
       if (worker) {
@@ -558,25 +238,7 @@ export default function App() {
     } catch (err) {
       console.error(err);
       setCsvStatus('error');
-      setErrorMsg('Remote Deck Fetch Failed. Ensure link CORS policy is public (e.g., raw.githubusercontent.com or Gist RAW).');
-    }
-  };
-
-  const savePreferences = async (newPrefs) => {
-    if (!user) return;
-    setSyncingSettings(true);
-    try {
-      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'preferences', 'settings'), newPrefs, { merge: true });
-      setPreferences(newPrefs);
-      if (worker) {
-        worker.postMessage({ type: 'UPDATE_PREFERENCES', payload: newPrefs });
-      }
-      setSaveToast(true);
-      setTimeout(() => setSaveToast(false), 3000);
-    } catch (err) {
-      console.error("Cloud synchronization failed:", err);
-    } finally {
-      setSyncingSettings(false);
+      setErrorMsg('Remote Deck Fetch Failed. Verify connection configuration or raw GitHub Link.');
     }
   };
 
@@ -592,17 +254,12 @@ export default function App() {
       const text = event.target.result;
       try {
         await saveFileToDB(text);
-        // Clean out any stale remote URL configuration so local config is primary
         const updatedPrefs = { ...preferences, remoteDeckUrl: '' };
-        await savePreferences(updatedPrefs);
+        savePreferencesLocally(updatedPrefs);
       } catch (err) {
-        console.error("Failed to save local dataset configuration:", err);
+        console.error("Failed to save dataset locally:", err);
       }
       worker.postMessage({ type: 'LOAD_CSV', payload: text });
-    };
-    reader.onerror = () => {
-      setCsvStatus('error');
-      setErrorMsg('Failed to read the file from disk.');
     };
     reader.readAsText(file);
   };
@@ -611,9 +268,9 @@ export default function App() {
     try {
       await clearFileFromDB();
       const updatedPrefs = { ...preferences, remoteDeckUrl: DEFAULT_DECK_URL };
-      await savePreferences(updatedPrefs);
+      savePreferencesLocally(updatedPrefs);
     } catch(e) {
-      console.error("Failed to flush IndexedDB:", e);
+      console.error("Failed to flush local storage DB:", e);
     }
     setCsvStatus('idle');
     setCardCount(0);
@@ -630,6 +287,7 @@ export default function App() {
   };
 
   const callGeminiJSON = async (systemInstruction, userPrompt, schema) => {
+    if (!apiKey) throw new Error("Missing Gemini API Key. Please add your key in Settings.");
     const delays = [1000, 2000, 4000, 8000, 16000];
     const payload = {
       contents: [{ parts: [{ text: userPrompt }] }],
@@ -639,7 +297,6 @@ export default function App() {
 
     for (let i = 0; i < 6; i++) {
       try {
-        // Updated to use the stable production gemini-2.5-flash model endpoint!
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -656,6 +313,7 @@ export default function App() {
   };
 
   const callGeminiText = async (systemInstruction, userPrompt) => {
+    if (!apiKey) throw new Error("Missing Gemini API Key. Please add your key in Settings.");
     const delays = [1000, 2000, 4000, 8000, 16000];
     const payload = {
       contents: [{ parts: [{ text: userPrompt }] }],
@@ -664,7 +322,6 @@ export default function App() {
 
     for (let i = 0; i < 6; i++) {
       try {
-        // Updated to use the stable production gemini-2.5-flash model endpoint!
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -683,10 +340,7 @@ export default function App() {
   const extractKeywordsFromAI = async (text) => {
     const schema = {
       type: "ARRAY",
-      items: { 
-        type: "ARRAY",
-        items: { type: "STRING" }
-      }
+      items: { type: "ARRAY", items: { type: "STRING" } }
     };
     const sys = "Analyze the user's medical query. Break it down into distinct, required independent concepts to build an AND/OR boolean search query. CRITICAL: ONLY include core medical entities (diseases, drugs, anatomy) as required groups. EXCLUDE generic academic terms or verbs (e.g., 'mechanism of action', 'treatment', 'describe', 'pathophysiology', 'causes') because requiring them will filter out valid flashcards. For each core concept, provide an array of synonyms/abbreviations. Example: 'describe the mechanism of action of thiazides in hyperkalemia' -> [['thiazide', 'thiazides', 'hctz'], ['hyperkalemia', 'high k+', 'hyperkalemic']]. Return a JSON array of arrays of strings.";
     return await callGeminiJSON(sys, text, schema);
@@ -701,20 +355,16 @@ export default function App() {
           items: {
             type: "OBJECT",
             properties: {
-              name: { type: "STRING", description: "Name of category e.g., Physiology, Pathology" },
+              name: { type: "STRING" },
               searchQueries: {
                 type: "ARRAY",
                 items: {
                   type: "OBJECT",
                   properties: {
-                    description: { type: "STRING", description: "Short description of learning objective" },
+                    description: { type: "STRING" },
                     requiredConcepts: {
                       type: "ARRAY",
-                      description: "Array of groups. Acts as AND logic between groups. Within group is OR.",
-                      items: {
-                        type: "ARRAY",
-                        items: { type: "STRING" }
-                      }
+                      items: { type: "ARRAY", items: { type: "STRING" } }
                     }
                   }
                 }
@@ -724,7 +374,7 @@ export default function App() {
         }
       }
     };
-    const sys = "The user has provided a syllabus or list of objectives enclosed in quotes. Dissect it into logical categories (e.g., Physiology, Pathology, Pharmacology, etc. based on the text headers). For each category, create multiple highly specific boolean search queries to find flashcards covering those objectives. A search query must have a 'description' and a 'requiredConcepts' array (AND logic between groups, OR logic within groups). CRITICAL: 'requiredConcepts' are MANDATORY for a card to match. Therefore, ONLY include core medical entities (specific drugs, diseases, anatomical structures, pathogens) as required groups. DO NOT include generic academic terms (e.g., 'mechanism of action', 'pathophysiology', 'diagnosis', 'treatment', 'evaluate', 'causes') as their own concept groups, because flashcards rarely contain these exact structural words. Keep synonym strings short and accurate.";
+    const sys = "The user has provided a syllabus or list of objectives enclosed in quotes. Dissect it into logical categories (e.g., Physiology, Pathology, Pharmacology, etc. based on the text headers). For each category, create multiple highly specific boolean search queries to find flashcards covering those objectives. A search query must have a 'description' and a 'requiredConcepts' array (AND logic between groups, OR logic within groups). CRITICAL: 'requiredConcepts' are MANDATORY for a card to match. Therefore, ONLY include core medical entities (specific drugs, diseases, anatomical structures, pathogens) as required groups. DO NOT include generic academic terms. Keep synonym strings short and accurate.";
     return await callGeminiJSON(sys, text, schema);
   };
 
@@ -751,27 +401,22 @@ export default function App() {
       if (isQuotedMode) {
         setSearchMode('syllabus');
         const syllabusData = await extractSyllabusFromAI(cleanPrompt);
-        
         if (!syllabusData || !syllabusData.categories || syllabusData.categories.length === 0) {
           throw new Error("Could not parse categories from the quoted syllabus.");
         }
-        
         setExtractedSyllabus(syllabusData);
         setSearchStatus('searching');
         worker.postMessage({ type: 'SEARCH_SYLLABUS', payload: { categories: syllabusData.categories } });
       } else {
         setSearchMode('normal');
         const conceptGroups = await extractKeywordsFromAI(cleanPrompt);
-        
         if (!conceptGroups || conceptGroups.length === 0) {
           throw new Error("Could not extract meaningful concepts from the prompt.");
         }
-
         setExtractedConcepts(conceptGroups);
         setSearchStatus('searching');
         worker.postMessage({ type: 'SEARCH', payload: { conceptGroups } });
       }
-      
     } catch (err) {
       console.error(err);
       setErrorMsg(err.message || 'An error occurred during search.');
@@ -784,17 +429,15 @@ export default function App() {
 
     flatFormattedCards.forEach(item => {
       Object.entries(item.extractedVideos).forEach(([resourceName, videosList]) => {
-        // Robust backward-compatible category checks
         const normalizedName = resourceName === 'B&B' ? 'Boards & Beyond' : 
                                resourceName === 'SketchyMicro' ? 'Sketchy Micro' : 
                                resourceName === 'SketchyPharm' ? 'Sketchy Pharm' : 
                                resourceName === 'SketchyPath' ? 'Sketchy Pathology' : 
                                resourceName;
 
-        // CRITICAL EXCLUSION: "Low/High Yield" is not a video! Do not sum or display here.
+        // CRITICAL: NEVER render 'Low/High Yield' inside the Video Summary counts
         if (normalizedName === 'Low/High Yield' || normalizedName === 'Low/HighYield') return;
 
-        // Check if enabled in user configurations
         const isEnabled = preferences.enabledServices[normalizedName] === true || 
                           preferences.enabledServices[resourceName] === true;
 
@@ -815,9 +458,7 @@ export default function App() {
         .map(([name, count]) => ({ name, count }))
         .sort((a, b) => b.count - a.count); 
         
-      // NEW HIGH-YIELD THRESHOLD FILTERING
-      // Show ALL videos containing 4 or more cards. 
-      // If there are fewer than 3 qualifying videos, fall back to show the top 3 videos.
+      // NEW HIGH-YIELD THRESHOLD: Show all >= 4 cards, or fallback to top 3
       const filtered = sorted.filter((item, index) => item.count >= 4 || index < 3);
       summary[resourceName] = filtered;
     });
@@ -825,7 +466,6 @@ export default function App() {
     return summary;
   };
 
-  // Derive video summaries directly inside the render cycle to guarantee live updates
   const videoSummary = generateVideoSummaryData(results);
 
   const syllabusVideoSummaries = {};
@@ -841,7 +481,6 @@ export default function App() {
       score: item.score,
       extractedVideos: parseTagsForVideos(item.card.tags)
     }));
-
     setResults(formattedCards);
     setSearchStatus('complete');
   };
@@ -861,7 +500,6 @@ export default function App() {
         return formattedCard;
       });
     });
-
     setSyllabusResults(formattedSyllabusMap);
     setResults(flatResults); 
     setSearchStatus('complete');
@@ -1016,11 +654,11 @@ export default function App() {
           const isEnabled = preferences.enabledServices[normalizedCategory] === true || 
                             preferences.enabledServices[category] === true;
 
-          // STRICT FILTER HIDE (If resource is not explicitly configured to true, skip render)
+          // STRICT FILTER HIDE (If resource is unchecked in settings, completely hide it)
           if (!vids || vids.length === 0 || !isEnabled) return null;
 
           return vids.map((vid, i) => {
-            // Render "Low/High Yield" with custom pill configuration (Exclude standard video icon)
+            // CUSTOM YIELD BADGE (Rendered as gold pill, no video icon)
             if (normalizedCategory === 'Low/High Yield' || normalizedCategory === 'Low/HighYield') {
               return (
                 <span key={`${category}-${i}`} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200 animate-fade-in shadow-sm">
@@ -1114,7 +752,6 @@ export default function App() {
     
     if (!summaryData) return null;
 
-    // Filter recommended resources dynamically by checked preferences strictly
     const activeSummaryData = Object.fromEntries(
       Object.entries(summaryData).filter(([category, vids]) => 
         vids.length > 0 && preferences.enabledServices[category] === true
@@ -1182,30 +819,26 @@ export default function App() {
     );
   };
 
-  // Get list of enabled resources based on current exam scope focus
   const getActiveSettingResources = () => {
     if (preferences.examFocus === 'step1') return step1Resources;
     if (preferences.examFocus === 'step2') return step2Resources;
     return Array.from(new Set([...step1Resources, ...step2Resources])).sort();
   };
 
-  // Check or uncheck all dynamically mapped resources
   const setAllResourcesSelected = (status) => {
     const updated = { ...preferences.enabledServices };
     getActiveSettingResources().forEach(r => {
       updated[r] = status;
     });
-    savePreferences({ ...preferences, enabledServices: updated });
+    savePreferencesLocally({ ...preferences, enabledServices: updated });
   };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans relative pb-10">
       
-      {/* Configuration Status Toast Notification */}
       {saveToast && (
         <div className="fixed bottom-5 right-5 z-50 bg-slate-900 text-white py-3 px-5 rounded-xl shadow-lg border border-slate-800 flex items-center gap-2 animate-bounce">
-          <Cloud className="w-5 h-5 text-emerald-400 animate-spin" />
-          <span className="text-sm font-semibold">Preferences saved to Cloud!</span>
+          <span className="text-sm font-semibold">Settings Saved Locally!</span>
         </div>
       )}
 
@@ -1249,48 +882,53 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         
-        {/* API Warning Banner and Tutorial */}
-        <div className="bg-amber-50 border-2 border-amber-200 rounded-xl p-4 mb-6 shadow-sm">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <Sparkles className="w-8 h-8 text-amber-500 shrink-0" />
-              <div>
-                <h4 className="font-bold text-amber-900 text-sm">Gemini Production-Ready Engine Active</h4>
-                <p className="text-xs text-amber-700">Equipped with automatic background scans. Toggle "Low/High Yield" inside Settings to enable Yield badges!</p>
+        {!apiKey && (
+          <div className="bg-amber-50 border-2 border-amber-200 rounded-xl p-4 mb-6 shadow-sm">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-2">
+              <div className="flex items-center gap-3">
+                <Key className="w-8 h-8 text-amber-500 shrink-0" />
+                <div>
+                  <h4 className="font-bold text-amber-900 text-sm">Gemini API Key Required</h4>
+                  <p className="text-xs text-amber-700">AI features (syllabus parsing, summaries, pre-test quizzes) require an API key to run.</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => setShowKeyGuide(!showKeyGuide)}
+                  className="text-xs font-semibold bg-white text-amber-800 border border-amber-300 px-3 py-2 rounded-lg hover:bg-amber-100/50 transition-colors flex items-center gap-1"
+                >
+                  <HelpCircle className="w-3.5 h-3.5" />
+                  {showKeyGuide ? "Hide Tutorial" : "How to Get Key?"}
+                </button>
+                <button 
+                  onClick={() => setShowSettings(true)}
+                  className="text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg shadow-sm transition-colors"
+                >
+                  Add Key in Settings
+                </button>
               </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                onClick={() => setShowKeyGuide(!showKeyGuide)}
-                className="text-xs font-semibold bg-white text-amber-800 border border-amber-300 px-3 py-2 rounded-lg hover:bg-amber-100/50 transition-colors flex items-center gap-1"
-              >
-                <HelpCircle className="w-3.5 h-3.5" />
-                {showKeyGuide ? "Hide Tutorial" : "API Setup Guide?"}
-              </button>
-            </div>
-          </div>
 
-          {/* Expandable Key Guide */}
-          {showKeyGuide && (
-            <div className="border-t border-amber-200 p-4 bg-amber-50/50 text-xs text-amber-800 leading-relaxed space-y-2 animate-slide-down mt-3">
-              <p className="font-bold">How to retrieve your secure and completely free Google developer key:</p>
-              <ol className="list-decimal pl-4 space-y-1">
-                <li>Visit the official Google Console: <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" className="underline font-bold hover:text-amber-900">Google AI Studio ↗</a>.</li>
-                <li>Sign in securely with any basic personal Google Account.</li>
-                <li>Click the prominent blue button at the top-left corner: **"Get API Key"**.</li>
-                <li>Click **"Create API Key"**, select **"Create API Key in new project"** (free of charge).</li>
-                <li>Copy your key string (looks like `AIzaSy...`). Paste it directly inside Settings!</li>
-              </ol>
-            </div>
-          )}
-        </div>
+            {showKeyGuide && (
+              <div className="border-t border-amber-200 p-4 bg-amber-50/50 text-xs text-amber-800 leading-relaxed space-y-2 animate-slide-down">
+                <p className="font-bold">Follow these steps to generate a free secure developer API key:</p>
+                <ol className="list-decimal pl-4 space-y-1">
+                  <li>Go to Google's official developer console: <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" className="underline font-bold hover:text-amber-900">Google AI Studio ↗</a>.</li>
+                  <li>Log in with any normal personal Google account.</li>
+                  <li>Click the blue button at the top-left labeled <strong>"Get API Key"</strong>.</li>
+                  <li>Click <strong>"Create API Key"</strong>, choose a project, and select <strong>"Create API Key in new project"</strong>.</li>
+                  <li>Copy the generated key string (which begins with <code>AIzaSy...</code>).</li>
+                  <li>Open <strong>Settings</strong> on this webpage, paste it into the field, and close Settings!</li>
+                </ol>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           
-          {/* Controls Column */}
           <div className="lg:col-span-4 space-y-6">
             
-            {/* Active Configurations Summary */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
               <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
                 <Sliders className="w-4 h-4" /> Active Configurations
@@ -1317,7 +955,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Resource Search Panel */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
               <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4 flex items-center gap-2">
                 <Search className="w-4 h-4 animate-pulse" /> Find Resources
@@ -1355,7 +992,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Display Content Column */}
           <div className="lg:col-span-8 space-y-6">
             
             {searchStatus === 'idle' && results.length === 0 && (
@@ -1368,7 +1004,6 @@ export default function App() {
 
             {searchStatus === 'complete' && results.length > 0 && (
               <>
-                {/* AI Concept Interpretation UI - Normal Mode */}
                 {searchMode === 'normal' && extractedConcepts.length > 0 && (
                   <InfoBlock title="AI Search Logic (Strict Intersection):" icon={Sparkles}>
                     <div className="flex flex-wrap gap-2 pt-1">
@@ -1384,7 +1019,6 @@ export default function App() {
                   </InfoBlock>
                 )}
 
-                {/* AI Concept Interpretation UI - Syllabus Mode */}
                 {searchMode === 'syllabus' && extractedSyllabus && (
                   <InfoBlock title="AI Syllabus Parsing Logic:" icon={Sparkles}>
                     <div className="space-y-3 pt-1">
@@ -1414,7 +1048,6 @@ export default function App() {
                   </InfoBlock>
                 )}
 
-                {/* Master Video Summary List */}
                 <SectionCard
                   title="Recommended Videos"
                   icon={PlayCircle}
@@ -1439,7 +1072,6 @@ export default function App() {
                     </>
                   }
                 >
-                  {/* AI Summary Section */}
                   {summaryStatus !== 'idle' && (
                     <div className="bg-violet-50/50 border-b border-violet-100 p-5">
                       <h3 className="text-sm font-bold text-violet-900 flex items-center gap-2 mb-3">
@@ -1485,7 +1117,6 @@ export default function App() {
                   )}
                 </SectionCard>
 
-                {/* Normal Mode List */}
                 {searchMode === 'normal' && (() => {
                   const displayedResults = selectedVideoFilter 
                     ? results.filter(item => Object.values(item.extractedVideos).flat().includes(selectedVideoFilter))
@@ -1515,7 +1146,6 @@ export default function App() {
                   );
                 })()}
 
-                {/* Syllabus Mode List */}
                 {searchMode === 'syllabus' && (
                   <div>
                     {Object.entries(syllabusResults).map(([categoryName, items]) => {
@@ -1576,7 +1206,29 @@ export default function App() {
 
               <div className="space-y-6">
                 
-                {/* Exam relevance focus */}
+                {/* Secure API Key input */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+                    <Key className="w-3.5 h-3.5 text-indigo-500" /> Gemini API Developer Key
+                  </label>
+                  <input 
+                    type="password"
+                    placeholder="Paste AI API key here..."
+                    value={apiKey}
+                    onChange={(e) => handleSaveApiKey(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white outline-none text-slate-700 font-mono shadow-inner"
+                  />
+                  <div className="bg-slate-50 border border-slate-100 p-2.5 rounded-lg mt-2 text-[11px] text-slate-500 leading-relaxed">
+                    <span className="font-bold block text-slate-700 mb-1">🔑 Quick Setup Guide:</span>
+                    <ol className="list-decimal pl-3 space-y-0.5">
+                      <li>Go to <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" className="underline font-semibold text-indigo-600 hover:text-indigo-800">Google AI Studio ↗</a>.</li>
+                      <li>Click blue button <strong>"Get API Key"</strong>.</li>
+                      <li>Select <strong>"Create API Key in new project"</strong> and paste the key here!</li>
+                    </ol>
+                  </div>
+                </div>
+
+                {/* Exam relevance toggle */}
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                     Exam Scope Focus
@@ -1585,7 +1237,7 @@ export default function App() {
                     {['step1', 'step2', 'both'].map((type) => (
                       <button
                         key={type}
-                        onClick={() => savePreferences({ ...preferences, examFocus: type })}
+                        onClick={() => savePreferencesLocally({ ...preferences, examFocus: type })}
                         className={`py-2 px-3 rounded-lg border text-sm font-semibold capitalize transition-all ${
                           preferences.examFocus === type 
                             ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
@@ -1643,7 +1295,7 @@ export default function App() {
                                 ...preferences.enabledServices, 
                                 [service]: preferences.enabledServices[service] === true ? false : true
                               };
-                              savePreferences({ ...preferences, enabledServices: updatedServices });
+                              savePreferencesLocally({ ...preferences, enabledServices: updatedServices });
                             }}
                             className="rounded text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5"
                           />
@@ -1670,12 +1322,12 @@ export default function App() {
                     />
                     <button
                       onClick={() => {
-                        savePreferences(preferences);
+                        savePreferencesLocally(preferences);
                         fetchRemoteDeck(preferences.remoteDeckUrl);
                       }}
-                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-bold shrink-0 transition-all shadow-sm flex items-center gap-1"
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-bold shrink-0 transition-all shadow-sm flex items-center justify-center gap-1"
                     >
-                      <RefreshCw className="w-3.5 h-3.5" /> Sync Deck
+                      Sync Deck
                     </button>
                   </div>
                 </div>
@@ -1706,10 +1358,8 @@ export default function App() {
             </div>
 
             <div className="border-t pt-4 border-slate-200 flex items-center justify-between text-xs text-slate-400 font-medium shrink-0 mt-4">
-              <span className="flex items-center gap-1.5 text-emerald-600 bg-emerald-50 px-2 py-1 rounded-md border border-emerald-100">
-                <UserCheck className="w-3.5 h-3.5" /> Anonymous Authentication Verified
-              </span>
-              <span>Cloud Sync Engaged</span>
+              <span>Standard Offline Mode Active</span>
+              <span>Data stored locally</span>
             </div>
           </div>
         </div>
