@@ -402,9 +402,6 @@ export default function App() {
         if (parsed.showYieldTags === undefined) {
           parsed.showYieldTags = true;
         }
-        if ('remoteDeckUrl' in parsed) {
-          delete parsed.remoteDeckUrl;
-        }
         setPreferences(parsed);
       } catch(e) {
         console.error("Local preferences load failed", e);
@@ -514,18 +511,29 @@ export default function App() {
   }, []);
 
   const fetchRemoteDeck = async () => {
+    console.log('fetchRemoteDeck() start');
+    const endpoint = DEFAULT_DECK_URL;
+    console.log('Fetching remote deck from endpoint:', endpoint);
     setCsvStatus('loading');
     setErrorMsg('');
     try {
-      const response = await fetch(DEFAULT_DECK_URL);
-      if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+      const response = await fetch(endpoint);
+      console.log('fetchRemoteDeck() response status:', response.status);
+      if (!response.ok) {
+        const bodyText = await response.text();
+        console.error('fetchRemoteDeck() fetch failed:', response.status, response.statusText, bodyText);
+        throw new Error(`HTTP Error: ${response.status}`);
+      }
       const text = await response.text();
+      console.log('fetchRemoteDeck() response received, bytes:', text.length);
       await saveFileToDB(text);
+      console.log('fetchRemoteDeck() saved CSV to IndexedDB');
       if (worker) {
         worker.postMessage({ type: 'LOAD_CSV', payload: text });
       }
+      console.log('fetchRemoteDeck() posted LOAD_CSV to worker');
     } catch (err) {
-      console.error(err);
+      console.error('fetchRemoteDeck() error:', err);
       setCsvStatus('error');
       setErrorMsg('Remote Deck Fetch Failed. Verify connection configuration.');
     }
@@ -1507,9 +1515,9 @@ export default function App() {
                   </div>
                   <button
                     onClick={() => {
-                      savePreferencesLocally(preferences);
-                      fetchRemoteDeck();
+                      console.log('Sync Deck button clicked');
                       setShowSettings(false); // Close modal to show the loading state
+                      fetchRemoteDeck();
                     }}
                     className="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 rounded-lg text-sm font-bold transition-all shadow-sm flex items-center justify-center gap-2"
                   >
