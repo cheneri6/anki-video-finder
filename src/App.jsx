@@ -364,7 +364,6 @@ export default function App() {
   const [preferences, setPreferences] = useState({
     examFocus: 'step1', 
     enabledServices: {}, 
-    remoteDeckUrl: DEFAULT_DECK_URL,
     showYieldTags: true 
   });
   const [saveToast, setSaveToast] = useState(false);
@@ -400,12 +399,11 @@ export default function App() {
     if (localPrefs) {
       try {
         const parsed = JSON.parse(localPrefs);
-        
-        // Force the internal API endpoint regardless of previous cached links
-        parsed.remoteDeckUrl = DEFAULT_DECK_URL;
-        
         if (parsed.showYieldTags === undefined) {
           parsed.showYieldTags = true;
+        }
+        if ('remoteDeckUrl' in parsed) {
+          delete parsed.remoteDeckUrl;
         }
         setPreferences(parsed);
       } catch(e) {
@@ -478,7 +476,6 @@ export default function App() {
           
           const finalPrefs = {
             examFocus: parsedPrefs.examFocus || 'step1',
-            remoteDeckUrl: parsedPrefs.remoteDeckUrl || DEFAULT_DECK_URL,
             showYieldTags: parsedPrefs.showYieldTags !== undefined ? parsedPrefs.showYieldTags : true,
             enabledServices: dynamicServices
           };
@@ -516,18 +513,11 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (preferences.remoteDeckUrl && csvStatus === 'idle') {
-      fetchRemoteDeck(preferences.remoteDeckUrl);
-    }
-  }, [preferences.remoteDeckUrl]);
-
-  const fetchRemoteDeck = async (url) => {
-    if (!url) return;
+  const fetchRemoteDeck = async () => {
     setCsvStatus('loading');
     setErrorMsg('');
     try {
-      const response = await fetch(url);
+      const response = await fetch(DEFAULT_DECK_URL);
       if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
       const text = await response.text();
       await saveFileToDB(text);
@@ -537,7 +527,7 @@ export default function App() {
     } catch (err) {
       console.error(err);
       setCsvStatus('error');
-      setErrorMsg('Remote Deck Fetch Failed. Verify connection configuration or GitHub Link.');
+      setErrorMsg('Remote Deck Fetch Failed. Verify connection configuration.');
     }
   };
 
@@ -553,8 +543,6 @@ export default function App() {
       const text = event.target.result;
       try {
         await saveFileToDB(text);
-        const updatedPrefs = { ...preferences, remoteDeckUrl: '' };
-        savePreferencesLocally(updatedPrefs);
       } catch (err) {
         console.error("Failed to save dataset locally:", err);
       }
@@ -566,8 +554,6 @@ export default function App() {
   const handleClearData = async () => {
     try {
       await clearFileFromDB();
-      const updatedPrefs = { ...preferences, remoteDeckUrl: DEFAULT_DECK_URL };
-      savePreferencesLocally(updatedPrefs);
     } catch(e) {
       console.error("Failed to flush local storage DB:", e);
     }
@@ -1121,7 +1107,7 @@ export default function App() {
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-500">Source Type:</span>
                   <span className="font-bold text-indigo-600 truncate max-w-[150px]">
-                    {preferences.remoteDeckUrl ? 'Cloud Connection' : 'Local cache'}
+                    {csvStatus === 'ready' ? 'Deck Loaded' : 'No deck loaded'}
                   </span>
                 </div>
               </div>
@@ -1522,7 +1508,7 @@ export default function App() {
                   <button
                     onClick={() => {
                       savePreferencesLocally(preferences);
-                      fetchRemoteDeck(DEFAULT_DECK_URL);
+                      fetchRemoteDeck();
                       setShowSettings(false); // Close modal to show the loading state
                     }}
                     className="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 rounded-lg text-sm font-bold transition-all shadow-sm flex items-center justify-center gap-2"
