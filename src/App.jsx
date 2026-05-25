@@ -6,7 +6,7 @@ import {
   ChevronDown, ChevronUp, Settings, Sliders, Key, HelpCircle, Filter, CheckSquare, Square
 } from 'lucide-react';
 
-const DEFAULT_DECK_URL = "https://raw.githubusercontent.com/cheneri6/anki-database/refs/heads/main/AnKing_Step_Deck.csv?token=GHSAT0AAAAAAD5XEK2AAJT6FCX2KZI3FFKI2QTZIGA";
+const DEFAULT_DECK_URL = "/api/deck";
 
 // --- INLINE BACKGROUND WEB WORKER ENGINE ---
 // Keeps search execution off the main UI Thread to avoid performance stuttering
@@ -400,9 +400,10 @@ export default function App() {
     if (localPrefs) {
       try {
         const parsed = JSON.parse(localPrefs);
-        if (!parsed.remoteDeckUrl || parsed.remoteDeckUrl.includes('default-app-id') || parsed.remoteDeckUrl.includes('anki-video-finder')) {
-          parsed.remoteDeckUrl = DEFAULT_DECK_URL;
-        }
+        
+        // Force the internal API endpoint regardless of previous cached links
+        parsed.remoteDeckUrl = DEFAULT_DECK_URL;
+        
         if (parsed.showYieldTags === undefined) {
           parsed.showYieldTags = true;
         }
@@ -536,7 +537,7 @@ export default function App() {
     } catch (err) {
       console.error(err);
       setCsvStatus('error');
-      setErrorMsg('Remote Deck Fetch Failed. Verify connection configuration or raw GitHub Link.');
+      setErrorMsg('Remote Deck Fetch Failed. Verify connection configuration or GitHub Link.');
     }
   };
 
@@ -1521,7 +1522,8 @@ export default function App() {
                   <button
                     onClick={() => {
                       savePreferencesLocally(preferences);
-                      fetchRemoteDeck(preferences.remoteDeckUrl);
+                      fetchRemoteDeck(DEFAULT_DECK_URL);
+                      setShowSettings(false); // Close modal to show the loading state
                     }}
                     className="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 rounded-lg text-sm font-bold transition-all shadow-sm flex items-center justify-center gap-2"
                   >
@@ -1539,7 +1541,10 @@ export default function App() {
                       type="file" 
                       accept=".csv,.txt"
                       ref={fileInputRef}
-                      onChange={handleFileUpload}
+                      onChange={(e) => {
+                        handleFileUpload(e);
+                        setShowSettings(false);
+                      }}
                       className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                     />
                     <span className="text-xs font-semibold text-slate-700 block">Select CSV / TSV File</span>
