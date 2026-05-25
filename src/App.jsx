@@ -6,7 +6,7 @@ import {
   ChevronDown, ChevronUp, Settings, Sliders, Key, HelpCircle, Filter, CheckSquare, Square
 } from 'lucide-react';
 
-const DEFAULT_DECK_URL = "https://raw.githubusercontent.com/cheneri6/anki-database/refs/heads/main/AnKing_Step_Deck.csv";
+const DEFAULT_DECK_URL = "https://raw.githubusercontent.com/cheneri6/anki-database/refs/heads/main/AnKing_Step_Deck.csv?token=GHSAT0AAAAAAD5XEK2BJ7PGHTI473XPKTXO2QTYNCA";
 
 // --- INLINE BACKGROUND WEB WORKER ENGINE ---
 // Keeps search execution off the main UI Thread to avoid performance stuttering
