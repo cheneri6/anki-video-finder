@@ -532,6 +532,7 @@ export default function App() {
         worker.postMessage({ type: 'LOAD_CSV', payload: text });
       }
       console.log('fetchRemoteDeck() posted LOAD_CSV to worker');
+      console.log('fetchRemoteDeck() complete');
     } catch (err) {
       console.error('fetchRemoteDeck() error:', err);
       setCsvStatus('error');
