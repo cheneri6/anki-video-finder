@@ -1512,18 +1512,7 @@ export default function App() {
 
                 {/* Remote Deck URL sync */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center justify-between">
-                    <span>Remote Deck GitHub URL</span>
-                    <span className="text-[10px] text-slate-400 font-normal lowercase">CORS raw file link</span>
-                  </label>
-                  <div className="flex gap-2">
-                    <input 
-                      type="text"
-                      placeholder="https://raw.githubusercontent.com/.../AnKing.csv"
-                      value={preferences.remoteDeckUrl}
-                      onChange={(e) => setPreferences({ ...preferences, remoteDeckUrl: e.target.value })}
-                      className="flex-1 bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs focus:ring-2 focus:ring-indigo-500 outline-none text-slate-700"
-                    />
+                  
                     <button
                       onClick={() => {
                         savePreferencesLocally(preferences);
