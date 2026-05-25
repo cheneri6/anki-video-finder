@@ -6,10 +6,297 @@ import {
   ChevronDown, ChevronUp, Settings, Sliders, Key, HelpCircle, Filter, CheckSquare, Square
 } from 'lucide-react';
 
-// Import Web Worker natively using Vite query suffix to prevent target esbuild compilation issues
-import AppWorker from './worker?worker';
-
 const DEFAULT_DECK_URL = "https://raw.githubusercontent.com/cheneri6/anki-database/refs/heads/main/AnKing_Step_Deck.csv";
+
+// --- INLINE BACKGROUND WEB WORKER ENGINE ---
+// Keeps search execution off the main UI Thread to avoid performance stuttering
+const workerBlobCode = `
+  let cards = [];
+  let userPreferences = {
+    examFocus: 'step1', 
+    enabledServices: {}
+  };
+
+  function detectDelimiter(text) {
+    const lines = text.split('\\n').slice(0, 50);
+    let commaCount = 0;
+    let tabCount = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      if (!l.startsWith('#')) {
+        commaCount += (l.match(/,/g) || []).length;
+        tabCount += (l.match(/\\t/g) || []).length;
+      }
+    }
+    return tabCount > commaCount ? '\\t' : ',';
+  }
+
+  function parseData(text) {
+    const delimiter = detectDelimiter(text);
+    const result = [];
+    let row = [];
+    let startValue = 0;
+    let inQuotes = false;
+    
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      
+      if (c === '"') {
+        inQuotes = !inQuotes;
+      } else if (c === delimiter && !inQuotes) {
+        let val = text.substring(startValue, i);
+        if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) {
+          val = val.substring(1, val.length - 1).replace(/""/g, '"');
+        }
+        row.push(val);
+        startValue = i + 1;
+      } else if (c === '\\n' && !inQuotes) {
+        let val = text.substring(startValue, i);
+        if (val.length > 0 && val.charCodeAt(val.length - 1) === 13) { 
+          val = val.substring(0, val.length - 1);
+        }
+        if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) {
+          val = val.substring(1, val.length - 1).replace(/""/g, '"');
+        }
+        row.push(val);
+        if (row.length > 0) result.push(row);
+        row = [];
+        startValue = i + 1;
+      }
+    }
+    if (startValue < text.length) {
+      let val = text.substring(startValue);
+      if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) {
+        val = val.substring(1, val.length - 1).replace(/""/g, '"');
+      }
+      row.push(val);
+      result.push(row);
+    }
+    return result;
+  }
+
+  function cleanResourceName(raw) {
+    const resourceMap = {
+      'B&B': 'Boards & Beyond',
+      'SketchyMicro': 'Sketchy Micro',
+      'SketchyPharm': 'Sketchy Pharm',
+      'SketchyPath': 'Sketchy Pathology',
+      'SketchyAnatomy': 'Sketchy Anatomy',
+      'SketchyBiochem': 'Sketchy Biochem',
+      'SketchyBiostats/Epidemiology': 'Sketchy Biostats/Epidemiology',
+      'SketchyImmunology': 'Sketchy Immunology',
+      'SketchyPhysiology': 'Sketchy Physiology',
+      'DirtyMedicine': 'Dirty Medicine',
+      'FirstAid': 'First Aid',
+      'NinjaNerd': 'Ninja Nerd',
+      'DivineIntervention': 'Divine Intervention',
+      'SketchyFM': 'Sketchy Family Medicine',
+      'SketchyIM': 'Sketchy Internal Medicine',
+      'SketchyNeurology': 'Sketchy Neurology',
+      'SketchyOBGYN': 'Sketchy OBGYN',
+      'SketchyPeds': 'Sketchy Pediatrics',
+      'SketchyPsych': 'Sketchy Psychiatry',
+      'SketchySurgery': 'Sketchy Surgery',
+      'Low/HighYield': 'Low/High Yield',
+      'USMLERx': 'USMLE Rx',
+      'OME': 'OnlineMedEd',
+      'OME_banner': 'OnlineMedEd Banner',
+      'Resources_by_rotation': 'Resources by Rotation'
+    };
+    return resourceMap[raw] || raw;
+  }
+
+  self.onmessage = function(e) {
+    const { type, payload } = e.data;
+    
+    if (type === 'LOAD_CSV') {
+      try {
+        const rows = parseData(payload);
+        cards = [];
+        
+        let tagsColIdx = -1;
+        for (let i = 0; i < Math.min(20, rows.length); i++) {
+          if (rows[i][0] && typeof rows[i][0] === 'string' && rows[i][0].startsWith('#tags column:')) {
+            const colNum = parseInt(rows[i][0].split(':')[1], 10);
+            if (!isNaN(colNum)) tagsColIdx = colNum - 1;
+            break;
+          }
+        }
+        
+        if (tagsColIdx === -1) {
+          for (let i = 0; i < Math.min(50, rows.length); i++) {
+            const r = rows[i];
+            if (r[0] && typeof r[0] === 'string' && r[0].startsWith('#')) continue;
+            for (let j = 0; j < r.length; j++) {
+              if (r[j] && typeof r[j] === 'string' && r[j].includes('#AK_')) {
+                tagsColIdx = j;
+                break;
+              }
+            }
+            if (tagsColIdx !== -1) break;
+          }
+        }
+        
+        let discoveredStep1Resources = new Set();
+        let discoveredStep2Resources = new Set();
+        
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i];
+          if (r.length < 2 || (r[0] && typeof r[0] === 'string' && r[0].startsWith('#'))) continue; 
+          
+          let tags = '';
+          if (tagsColIdx !== -1 && tagsColIdx < r.length) {
+            tags = r[tagsColIdx];
+          } else {
+            tags = r[r.length - 1] || ''; 
+          }
+
+          const tagList = tags.split(' ');
+          tagList.forEach(t => {
+            if (!t) return;
+            const parts = t.split('::');
+            
+            const step1Idx = parts.findIndex(p => p.toLowerCase().includes('step1'));
+            if (step1Idx !== -1 && step1Idx + 1 < parts.length) {
+              let res = parts[step1Idx + 1].replace(/^#/, '');
+              if (res && !res.startsWith('^') && !res.startsWith('!') && res !== 'Subjects') {
+                discoveredStep1Resources.add(cleanResourceName(res));
+              }
+            }
+            
+            const step2Idx = parts.findIndex(p => p.toLowerCase().includes('step2'));
+            if (step2Idx !== -1 && step2Idx + 1 < parts.length) {
+              let res = parts[step2Idx + 1].replace(/^#/, '');
+              if (res && !res.startsWith('^') && !res.startsWith('!') && res !== 'Subjects') {
+                discoveredStep2Resources.add(cleanResourceName(res));
+              }
+            }
+          });
+
+          cards.push({
+            text: r[0] || '',
+            extra: r[1] || '',
+            tags: tags || ''
+          });
+        }
+
+        self.postMessage({ 
+          type: 'LOAD_COMPLETE', 
+          count: cards.length,
+          step1Resources: Array.from(discoveredStep1Resources).sort(),
+          step2Resources: Array.from(discoveredStep2Resources).sort()
+        });
+      } catch (error) {
+        self.postMessage({ type: 'ERROR', payload: error.message });
+      }
+    } 
+    
+    else if (type === 'UPDATE_PREFERENCES') {
+      userPreferences = payload;
+    }
+    
+    else if (type === 'SEARCH') {
+      const { conceptGroups } = payload;
+      let allMatches = [];
+      const lowerConceptGroups = conceptGroups.map(group => group.map(k => k.toLowerCase()));
+      
+      for (let i = 0; i < cards.length; i++) {
+        const c = cards[i];
+        
+        const hasStep1Tag = c.tags.toLowerCase().includes('step1');
+        const hasStep2Tag = c.tags.toLowerCase().includes('step2');
+        
+        if (userPreferences.examFocus === 'step1' && !hasStep1Tag && hasStep2Tag) continue;
+        if (userPreferences.examFocus === 'step2' && !hasStep2Tag && hasStep1Tag) continue;
+
+        let score = 0;
+        let matchCount = 0;
+        const searchPool = (c.text + " " + c.extra).toLowerCase();
+        
+        for (let j = 0; j < lowerConceptGroups.length; j++) {
+          let groupMatched = false;
+          const group = lowerConceptGroups[j];
+          for (let k = 0; k < group.length; k++) {
+            const term = group[k];
+            if (searchPool.includes(term)) {
+              groupMatched = true;
+              score += term.length;
+            }
+          }
+          if (groupMatched) matchCount++;
+        }
+        
+        if (matchCount > 0) {
+          allMatches.push({ card: c, score, matchCount });
+        }
+      }
+      
+      allMatches.sort((a, b) => {
+        if (b.matchCount !== a.matchCount) return b.matchCount - a.matchCount;
+        return b.score - a.score;
+      });
+
+      if (allMatches.length > 0) {
+         const highestMatchCount = allMatches[0].matchCount;
+         const topTier = allMatches.filter(m => m.matchCount === highestMatchCount);
+         self.postMessage({ type: 'SEARCH_COMPLETE', results: topTier.slice(0, 50) });
+      } else {
+         self.postMessage({ type: 'SEARCH_COMPLETE', results: [] });
+      }
+    }
+    
+    else if (type === 'SEARCH_SYLLABUS') {
+      const { categories } = payload;
+      let syllabusResults = {};
+
+      categories.forEach(cat => {
+        let catMatches = new Map();
+
+        cat.searchQueries.forEach(query => {
+           const lowerConceptGroups = query.requiredConcepts.map(group => group.map(k => k.toLowerCase()));
+           
+           for (let i = 0; i < cards.length; i++) {
+              const c = cards[i];
+              
+              const hasStep1Tag = c.tags.toLowerCase().includes('step1');
+              const hasStep2Tag = c.tags.toLowerCase().includes('step2');
+              if (userPreferences.examFocus === 'step1' && !hasStep1Tag && hasStep2Tag) continue;
+              if (userPreferences.examFocus === 'step2' && !hasStep2Tag && hasStep1Tag) continue;
+
+              let matchCount = 0;
+              const searchPool = (c.text + " " + c.extra).toLowerCase();
+
+              for (let j = 0; j < lowerConceptGroups.length; j++) {
+                let groupMatched = false;
+                const group = lowerConceptGroups[j];
+                for (let k = 0; k < group.length; k++) {
+                  if (searchPool.includes(group[k])) {
+                    groupMatched = true;
+                    break;
+                  }
+                }
+                if (groupMatched) matchCount++;
+              }
+
+              if (matchCount === lowerConceptGroups.length && lowerConceptGroups.length > 0) {
+                 if (!catMatches.has(c.text)) {
+                    catMatches.set(c.text, { card: c, score: 1 });
+                 }
+              }
+           }
+        });
+
+        syllabusResults[cat.name] = Array.from(catMatches.values()).slice(0, 40);
+      });
+
+      self.postMessage({ type: 'SEARCH_SYLLABUS_COMPLETE', results: syllabusResults });
+    }
+    
+    else if (type === 'CLEAR_CSV') {
+      cards = [];
+    }
+  };
+`;
 
 // --- INDEXED DB SERVICES FOR OFFLINE STORAGE ---
 const initDB = () => {
@@ -76,9 +363,9 @@ export default function App() {
   
   const [preferences, setPreferences] = useState({
     examFocus: 'step1', 
-    enabledServices: {}, // Populated dynamically during deck upload
+    enabledServices: {}, 
     remoteDeckUrl: DEFAULT_DECK_URL,
-    showYieldTags: true // Yield Display Toggles
+    showYieldTags: true 
   });
   const [saveToast, setSaveToast] = useState(false);
   
@@ -92,7 +379,7 @@ export default function App() {
   const [extractedConcepts, setExtractedConcepts] = useState([]); 
   const [extractedSyllabus, setExtractedSyllabus] = useState(null); 
   
-  // MULTI-SELECT ARRAY AND EXPLICIT SECTION ACCORDION CONTROLS (Prevents layout shifting)
+  // MULTI-SELECT ARRAY AND EXPLICIT SECTION ACCORDION CONTROLS
   const [selectedVideoFilters, setSelectedVideoFilters] = useState([]); 
   const [isSyllabusLogicExpanded, setIsSyllabusLogicExpanded] = useState(true);
 
@@ -143,9 +430,11 @@ export default function App() {
     setTimeout(() => setSaveToast(false), 2000);
   };
 
-  // Initialize Web Worker
+  // Initialize Web Worker securely
   useEffect(() => {
-    const w = new AppWorker();
+    const blob = new Blob([workerBlobCode], { type: 'application/javascript' });
+    const workerUrl = URL.createObjectURL(blob);
+    const w = new Worker(workerUrl);
     
     w.onmessage = (e) => {
       if (e.data.type === 'LOAD_COMPLETE') {
@@ -178,9 +467,7 @@ export default function App() {
           ];
 
           allRes.forEach(r => {
-            // Filter Low/High Yield completely out from general checklists
             if (r === 'Low/High Yield' || r === 'Low/HighYield') return;
-
             if (parsedPrefs.enabledServices && parsedPrefs.enabledServices[r] !== undefined) {
               dynamicServices[r] = parsedPrefs.enabledServices[r];
             } else {
@@ -224,6 +511,7 @@ export default function App() {
 
     return () => {
       w.terminate();
+      URL.revokeObjectURL(workerUrl);
     };
   }, []);
 
@@ -296,101 +584,43 @@ export default function App() {
     }
   };
 
-  const callGeminiJSON = async (systemInstruction, userPrompt, schema) => {
+  // --- AUTOMATED API RATE-LIMIT DEBOUNCE PROTECTION ---
+  const callGeminiSecureAPI = async (systemInstruction, userPrompt, jsonSchema = null) => {
     if (!apiKey) throw new Error("Missing Gemini API Key. Please add your key in Settings.");
-    const delays = [1000, 2000, 4000, 8000, 16000];
-    const payload = {
-      contents: [{ parts: [{ text: userPrompt }] }],
-      systemInstruction: { parts: [{ text: systemInstruction }] },
-      generationConfig: { responseMimeType: "application/json", responseSchema: schema }
-    };
-
-    for (let i = 0; i < 6; i++) {
-      try {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (!res.ok) throw new Error(`API Error: ${res.status}`);
-        const data = await res.json();
-        return JSON.parse(data.candidates?.[0]?.content?.parts?.[0]?.text);
-      } catch (err) {
-        if (i === 5) throw err;
-        await new Promise(r => setTimeout(r, delays[i]));
-      }
-    }
-  };
-
-  const callGeminiText = async (systemInstruction, userPrompt) => {
-    if (!apiKey) throw new Error("Missing Gemini API Key. Please add your key in Settings.");
-    const delays = [1000, 2000, 4000, 8000, 16000];
+    
     const payload = {
       contents: [{ parts: [{ text: userPrompt }] }],
       systemInstruction: { parts: [{ text: systemInstruction }] }
     };
+    if (jsonSchema) {
+      payload.generationConfig = { responseMimeType: "application/json", responseSchema: jsonSchema };
+    }
 
-    for (let i = 0; i < 6; i++) {
+    const backoffs = [1500, 3000, 6000, 12000];
+    for (let attempt = 0; attempt <= 4; attempt++) {
       try {
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
+        if (res.status === 429) throw new Error("RATE_LIMIT_PAUSE");
         if (!res.ok) throw new Error(`API Error: ${res.status}`);
         const data = await res.json();
-        return data.candidates?.[0]?.content?.parts?.[0]?.text;
+        const output = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        return jsonSchema ? JSON.parse(output) : output;
       } catch (err) {
-        if (i === 5) throw err;
-        await new Promise(r => setTimeout(r, delays[i]));
+        if (err.message === "RATE_LIMIT_PAUSE" && attempt < 4) {
+          await new Promise(r => setTimeout(r, backoffs[attempt]));
+          continue;
+        }
+        throw err;
       }
     }
   };
 
-  const extractKeywordsFromAI = async (text) => {
-    const schema = {
-      type: "ARRAY",
-      items: { type: "ARRAY", items: { type: "STRING" } }
-    };
-    const sys = "Analyze the user's medical query. Break it down into distinct, required independent concepts to build an AND/OR boolean search query. CRITICAL: ONLY include core medical entities (diseases, drugs, anatomy) as required groups. EXCLUDE generic academic terms or verbs (e.g., 'mechanism of action', 'treatment', 'describe', 'pathophysiology', 'causes') because requiring them will filter out valid flashcards. For each core concept, provide an array of synonyms/abbreviations. Example: 'describe the mechanism of action of thiazides in hyperkalemia' -> [['thiazide', 'thiazides', 'hctz'], ['hyperkalemia', 'high k+', 'hyperkalemic']]. Return a JSON array of arrays of strings.";
-    return await callGeminiJSON(sys, text, schema);
-  };
-
-  const extractSyllabusFromAI = async (text) => {
-    const schema = {
-      type: "OBJECT",
-      properties: {
-        categories: {
-          type: "ARRAY",
-          items: {
-            type: "OBJECT",
-            properties: {
-              name: { type: "STRING" },
-              searchQueries: {
-                type: "ARRAY",
-                items: {
-                  type: "OBJECT",
-                  properties: {
-                    description: { type: "STRING" },
-                    requiredConcepts: {
-                      type: "ARRAY",
-                      items: { type: "ARRAY", items: { type: "STRING" } }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    };
-    const sys = "The user has provided a syllabus or list of objectives enclosed in quotes. Dissect it into logical categories (e.g., Physiology, Pathology, Pharmacology, etc. based on the text headers). For each category, create multiple highly specific boolean search queries to find flashcards covering those objectives. A search query must have a 'description' and a 'requiredConcepts' array (AND logic between groups, OR logic within groups). CRITICAL: 'requiredConcepts' are MANDATORY for a card to match. Therefore, ONLY include core medical entities (specific drugs, diseases, anatomical structures, pathogens) as required groups. DO NOT include generic academic terms. Keep synonym strings short and accurate.";
-    return await callGeminiJSON(sys, text, schema);
-  };
-
-  const handleSearch = async () => {
+  const handleSearchTrigger = async () => {
     if (!prompt.trim() || csvStatus !== 'ready') return;
-    
     setSearchStatus('extracting');
     setErrorMsg('');
     setResults([]);
@@ -410,7 +640,32 @@ export default function App() {
 
       if (isQuotedMode) {
         setSearchMode('syllabus');
-        const syllabusData = await extractSyllabusFromAI(cleanPrompt);
+        const sys = "Dissect the medical syllabus enclosed in quotes into logical categories. For each category, generate accurate boolean intersection parameters. MANDATORY: only map core diagnostic nouns, diseases, drugs. Exclude formatting verbs. Return JSON object matches.";
+        const schema = {
+          type: "OBJECT",
+          properties: {
+            categories: {
+              type: "ARRAY",
+              items: {
+                type: "OBJECT",
+                properties: {
+                  name: { type: "STRING" },
+                  searchQueries: {
+                    type: "ARRAY",
+                    items: {
+                      type: "OBJECT",
+                      properties: {
+                        description: { type: "STRING" },
+                        requiredConcepts: { type: "ARRAY", items: { type: "ARRAY", items: { type: "STRING" } } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        };
+        const syllabusData = await callGeminiSecureAPI(sys, cleanPrompt, schema);
         if (!syllabusData || !syllabusData.categories || syllabusData.categories.length === 0) {
           throw new Error("Could not parse categories from the quoted syllabus.");
         }
@@ -419,7 +674,9 @@ export default function App() {
         worker.postMessage({ type: 'SEARCH_SYLLABUS', payload: { categories: syllabusData.categories } });
       } else {
         setSearchMode('normal');
-        const conceptGroups = await extractKeywordsFromAI(cleanPrompt);
+        const sys = "Analyze the user's medical query. Break it down into distinct, required independent concepts to build an AND/OR boolean search query. CRITICAL: ONLY include core medical entities (diseases, drugs, anatomy) as required groups. EXCLUDE generic academic terms or verbs. Return a JSON array of arrays of strings.";
+        const schema = { type: "ARRAY", items: { type: "ARRAY", items: { type: "STRING" } } };
+        const conceptGroups = await callGeminiSecureAPI(sys, cleanPrompt, schema);
         if (!conceptGroups || conceptGroups.length === 0) {
           throw new Error("Could not extract meaningful concepts from the prompt.");
         }
@@ -428,8 +685,7 @@ export default function App() {
         worker.postMessage({ type: 'SEARCH', payload: { conceptGroups } });
       }
     } catch (err) {
-      console.error(err);
-      setErrorMsg(err.message || 'An error occurred during search.');
+      setErrorMsg(err.message === "RATE_LIMIT_PAUSE" ? "Google Tier Rate Limit active. Pausing processing queue momentarily..." : "API Error. Validate setup constraints.");
       setSearchStatus('error');
     }
   };
@@ -445,11 +701,11 @@ export default function App() {
                                resourceName === 'SketchyPath' ? 'Sketchy Pathology' : 
                                resourceName;
 
-        // CRITICAL SEPARATION RULE: "Low/High Yield" is completely hidden from Recommended Videos counts
+        // CRITICAL: NEVER render 'Low/High Yield' inside the Video Summary counts
         if (normalizedName === 'Low/High Yield' || normalizedName === 'Low/HighYield') return;
 
-        const isEnabled = preferences.enabledServices[normalizedName] === true || 
-                          preferences.enabledServices[resourceName] === true;
+        const isEnabled = (preferences.enabledServices || {})[normalizedName] === true || 
+                          (preferences.enabledServices || {})[resourceName] === true;
 
         if (isEnabled) {
           if (!counts[normalizedName]) {
@@ -593,7 +849,7 @@ export default function App() {
     try {
       const cardsText = results.slice(0, 30).map(r => r.text).join('\n---\n');
       const sys = "You are an expert medical tutor. Summarize the key medical concepts from these flashcards into a highly condensed, bulleted high-yield study guide. Group by category (e.g., Pathophysiology, Presentation, Treatment). Use markdown formatting (bolding key terms). Do not hallucinate outside info.";
-      const text = await callGeminiText(sys, "Flashcards:\n" + cardsText);
+      const text = await callGeminiSecureAPI(sys, "Flashcards:\n" + cardsText);
       setAiSummary(text);
       setSummaryStatus('complete');
     } catch (e) {
@@ -624,7 +880,7 @@ export default function App() {
           required: ["id", "question", "options", "correctAnswerIndex", "explanation"]
         }
       };
-      const quizData = await callGeminiJSON(sys, "Flashcards:\n" + cardsText, schema);
+      const quizData = await callGeminiSecureAPI(sys, "Flashcards:\n" + cardsText, schema);
       setAiQuiz(quizData);
       setQuizStatus('complete');
     } catch (e) {
@@ -637,7 +893,7 @@ export default function App() {
     setCardExplanations(prev => ({ ...prev, [index]: { status: 'loading', text: '' } }));
     try {
       const sys = "You are a helpful medical tutor. Explain the underlying physiology or rationale behind this specific flashcard simply but accurately for a medical student. Keep it to 2-3 concise sentences.";
-      const text = await callGeminiText(sys, "Flashcard:\n" + cardText);
+      const text = await callGeminiSecureAPI(sys, "Flashcard:\n" + cardText);
       setCardExplanations(prev => ({ ...prev, [index]: { status: 'complete', text } }));
     } catch (e) {
       console.error(e);
@@ -645,7 +901,6 @@ export default function App() {
     }
   };
 
-  // MULTI-SELECT FILTER ARRAY CONTROLLER
   const handleToggleVideoFilter = (videoName) => {
     setSelectedVideoFilters(prev => 
       prev.includes(videoName) ? prev.filter(f => f !== videoName) : [...prev, videoName]
@@ -670,8 +925,8 @@ export default function App() {
                                      category === 'SketchyPath' ? 'Sketchy Pathology' : 
                                      category;
 
-          const isEnabled = preferences.enabledServices[normalizedCategory] === true || 
-                            preferences.enabledServices[category] === true;
+          const isEnabled = (preferences.enabledServices || {})[normalizedCategory] === true || 
+                            (preferences.enabledServices || {})[category] === true;
 
           // SPECIAL YIELD BADGE TOGGLE (Default to true if not explicitly disabled in settings)
           if (normalizedCategory === 'Low/High Yield' || normalizedCategory === 'Low/HighYield') {
@@ -859,7 +1114,7 @@ export default function App() {
                 <div className="flex justify-between text-sm border-b pb-2 border-slate-100">
                   <span className="text-slate-500">Active Resources:</span>
                   <span className="font-bold text-indigo-600">
-                    {Object.entries(preferences.enabledServices).filter(([k, v]) => v && getActiveSettingResources().includes(k)).length} Enabled
+                    {Object.entries(preferences.enabledServices || {}).filter(([k, v]) => v && getActiveSettingResources().includes(k)).length} Enabled
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
@@ -887,7 +1142,7 @@ export default function App() {
               />
               
               <button
-                onClick={handleSearch}
+                onClick={handleSearchTrigger}
                 disabled={csvStatus !== 'ready' || !prompt.trim() || searchStatus === 'extracting' || searchStatus === 'searching'}
                 className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm"
               >
@@ -1238,11 +1493,11 @@ export default function App() {
                         >
                           <input 
                             type="checkbox"
-                            checked={preferences.enabledServices[service] === true}
+                            checked={(preferences.enabledServices || {})[service] === true}
                             onChange={() => {
                               const updatedServices = { 
                                 ...preferences.enabledServices, 
-                                [service]: preferences.enabledServices[service] === true ? false : true
+                                [service]: (preferences.enabledServices || {})[service] === true ? false : true
                               };
                               savePreferencesLocally({ ...preferences, enabledServices: updatedServices });
                             }}
@@ -1393,9 +1648,7 @@ export default function App() {
   );
 }
 
-// --- OUTSIDE COMPONENTS (Prevents structural unmounting & UI shifts) ---
-
-// --- COMPONENT: COLLAPSIBLE CATEGORY ---
+// --- OUTSIDE COMPONENTS ---
 const CollapsibleCategory = ({ category, vids, selectedVideoFilters, handleToggleVideoFilter }) => {
   const [isOpen, setIsOpen] = useState(true);
   
@@ -1444,7 +1697,6 @@ const CollapsibleCategory = ({ category, vids, selectedVideoFilters, handleToggl
   );
 };
 
-// --- COMPONENT: COLLAPSIBLE SECTION ---
 const CollapsibleSection = ({ summaryData, title, preferences, selectedVideoFilters, handleToggleVideoFilter }) => {
   const [isOpen, setIsOpen] = useState(true);
   
@@ -1452,7 +1704,7 @@ const CollapsibleSection = ({ summaryData, title, preferences, selectedVideoFilt
 
   const activeSummaryData = Object.fromEntries(
     Object.entries(summaryData).filter(([category, vids]) => 
-      vids.length > 0 && preferences.enabledServices[category] === true
+      vids.length > 0 && (preferences.enabledServices || {})[category] === true
     )
   );
   
@@ -1494,7 +1746,6 @@ const CollapsibleSection = ({ summaryData, title, preferences, selectedVideoFilt
   );
 };
 
-// --- COMPONENT: INFO BLOCK ---
 const InfoBlock = ({ title, icon: Icon, isOpen, setIsOpen, children }) => {
   return (
     <div className="bg-blue-50 rounded-xl shadow-sm border border-blue-100 mb-6 overflow-hidden">
@@ -1513,6 +1764,40 @@ const InfoBlock = ({ title, icon: Icon, isOpen, setIsOpen, children }) => {
           {children}
         </div>
       )}
+    </div>
+  );
+};
+
+const SectionCard = ({ title, icon: Icon, badgeText, theme = 'slate', defaultOpen = true, headerRight, children }) => {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  const themes = {
+    indigo: { bg: 'bg-indigo-50', text: 'text-indigo-900', icon: 'text-indigo-600', chevron: 'text-indigo-400' },
+    slate: { bg: 'bg-slate-50/50', text: 'text-slate-800', icon: 'text-slate-600', chevron: 'text-slate-400' }
+  };
+
+  const t = themes[theme] || themes.slate;
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 mb-6 overflow-hidden">
+      <div 
+        onClick={() => setIsOpen(!isOpen)}
+        className={`${t.bg} border-b border-slate-200 px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 cursor-pointer transition-colors hover:bg-slate-100/50`}
+      >
+        <div className="flex items-center gap-2 select-none">
+          <Icon className={`w-5 h-5 ${t.icon}`} />
+          <h2 className={`text-lg font-bold ${t.text}`}>
+            {title} {badgeText && <span className="text-sm font-normal opacity-70 ml-1">({badgeText})</span>}
+          </h2>
+          {isOpen ? <ChevronUp className={`w-5 h-5 ml-1 ${t.chevron}`} /> : <ChevronDown className={`w-5 h-5 ml-1 ${t.chevron}`} />}
+        </div>
+        {headerRight && (
+          <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+            {headerRight}
+          </div>
+        )}
+      </div>
+      {isOpen && <div className="bg-white">{children}</div>}
     </div>
   );
 };
