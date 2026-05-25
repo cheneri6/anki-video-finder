@@ -1510,30 +1510,23 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Remote Deck URL sync */}
-                <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center justify-between">
-                    <span>Remote Deck GitHub URL</span>
-                    <span className="text-[10px] text-slate-400 font-normal lowercase">CORS raw file link</span>
-                  </label>
-                  <div className="flex gap-2">
-                    <input 
-                      type="text"
-                      placeholder="https://raw.githubusercontent.com/.../AnKing.csv"
-                      value={preferences.remoteDeckUrl}
-                      onChange={(e) => setPreferences({ ...preferences, remoteDeckUrl: e.target.value })}
-                      className="flex-1 bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs focus:ring-2 focus:ring-indigo-500 outline-none text-slate-700"
-                    />
-                    <button
-                      onClick={() => {
-                        savePreferencesLocally(preferences);
-                        fetchRemoteDeck(preferences.remoteDeckUrl);
-                      }}
-                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-bold shrink-0 transition-all shadow-sm flex items-center justify-center gap-1"
-                    >
-                      Sync Deck
-                    </button>
+                {/* Remote Deck Sync Button (URL Hidden) */}
+                <div className="border-t pt-4 border-slate-100">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">
+                      Database Sync
+                    </label>
+                    <span className="text-[10px] text-slate-400 font-normal">Remote connection</span>
                   </div>
+                  <button
+                    onClick={() => {
+                      savePreferencesLocally(preferences);
+                      fetchRemoteDeck(preferences.remoteDeckUrl);
+                    }}
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 rounded-lg text-sm font-bold transition-all shadow-sm flex items-center justify-center gap-2"
+                  >
+                    <CheckCircle className="w-4 h-4" /> Sync Remote Deck
+                  </button>
                 </div>
 
                 {/* Fallback Local CSV Upload */}
