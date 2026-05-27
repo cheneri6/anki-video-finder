@@ -741,7 +741,7 @@ export default function App() {
     const formattedCards = searchResults.map(item => ({
       ...item.card,
       score: item.score,
-      extractedVideos: parseTagsForVideos(item.card.tags)
+      extractedVideos: parseTagsForVideos(item.card.tags, preferences.examFocus)
     }));
     setResults(formattedCards);
     setSearchStatus('complete');
@@ -756,7 +756,7 @@ export default function App() {
         const formattedCard = {
           ...item.card,
           score: item.score,
-          extractedVideos: parseTagsForVideos(item.card.tags)
+          extractedVideos: parseTagsForVideos(item.card.tags, preferences.examFocus)
         };
         flatResults.push(formattedCard);
         return formattedCard;
@@ -767,63 +767,115 @@ export default function App() {
     setSearchStatus('complete');
   };
 
-  const parseTagsForVideos = (tagsStr) => {
+  const parseTagsForVideos = (tagsStr, examFocus = 'step1') => {
     const tags = tagsStr.split(' ');
     const videos = {};
+    const baseVideoNames = new Set(); // Track base video names to detect Extra tags
 
+    // First pass: collect all base video names (without Extra suffix)
     tags.forEach(t => {
       if (!t) return;
       const parts = t.split('::');
       
+      // Determine if this tag is for the selected step
+      const hasStep1 = parts.some(p => p.toLowerCase().includes('step1'));
+      const hasStep2 = parts.some(p => p.toLowerCase().includes('step2'));
+      
+      // Skip if step doesn't match exam focus
+      if (examFocus === 'step1' && !hasStep1) return;
+      if (examFocus === 'step2' && !hasStep2) return;
+      
       const stepIdx = parts.findIndex(p => p.toLowerCase().includes('step1') || p.toLowerCase().includes('step2'));
-      if (stepIdx !== -1 && stepIdx + 1 < parts.length) {
-        let resourceRaw = parts[stepIdx + 1].replace(/^#/, '');
-        
-        if (!resourceRaw || resourceRaw.startsWith('^') || resourceRaw.startsWith('!') || resourceRaw === 'Subjects' || resourceRaw === 'Resources_by_rotation') {
-          return;
+      if (stepIdx === -1 || stepIdx + 1 >= parts.length) return;
+      
+      // Check if last part is "Extra" and extract base name
+      const lastPart = parts[parts.length - 1];
+      const isExtraTag = lastPart && lastPart.toLowerCase() === 'extra';
+      
+      if (isExtraTag && parts.length > stepIdx + 2) {
+        // This is an Extra tag, construct base name without it
+        let basePathParts = parts.slice(stepIdx + 2, -1).map(p => p.replace(/^#/, '').replace(/_/g, ' '));
+        basePathParts = basePathParts.filter(p => p && !p.match(/AK Step/i) && !p.match(/AK Other/i));
+        const baseVideoName = basePathParts.join(' > ');
+        if (baseVideoName) {
+          baseVideoNames.add(baseVideoName);
         }
+      }
+    });
 
-        const resourceMap = {
-          'B&B': 'Boards & Beyond',
-          'SketchyMicro': 'Sketchy Micro',
-          'SketchyPharm': 'Sketchy Pharm',
-          'SketchyPath': 'Sketchy Pathology',
-          'SketchyAnatomy': 'Sketchy Anatomy',
-          'SketchyBiochem': 'Sketchy Biochem',
-          'SketchyBiostats/Epidemiology': 'Sketchy Biostats/Epidemiology',
-          'SketchyImmunology': 'Sketchy Immunology',
-          'SketchyPhysiology': 'Sketchy Physiology',
-          'DirtyMedicine': 'Dirty Medicine',
-          'FirstAid': 'First Aid',
-          'NinjaNerd': 'Ninja Nerd',
-          'DivineIntervention': 'Divine Intervention',
-          'SketchyFM': 'Sketchy Family Medicine',
-          'SketchyIM': 'Sketchy Internal Medicine',
-          'SketchyNeurology': 'Sketchy Neurology',
-          'SketchyOBGYN': 'Sketchy OBGYN',
-          'SketchyPeds': 'Sketchy Pediatrics',
-          'SketchyPsych': 'Sketchy Psychiatry',
-          'SketchySurgery': 'Sketchy Surgery',
-          'Low/HighYield': 'Low/High Yield',
-          'USMLERx': 'USMLE Rx',
-          'OME': 'OnlineMedEd',
-          'OME_banner': 'OnlineMedEd Banner',
-          'Resources_by_rotation': 'Resources by Rotation'
-        };
+    // Second pass: collect video tags, skipping Extra tags if base exists
+    tags.forEach(t => {
+      if (!t) return;
+      const parts = t.split('::');
+      
+      // Determine if this tag is for the selected step
+      const hasStep1 = parts.some(p => p.toLowerCase().includes('step1'));
+      const hasStep2 = parts.some(p => p.toLowerCase().includes('step2'));
+      
+      // Skip if step doesn't match exam focus
+      if (examFocus === 'step1' && !hasStep1) return;
+      if (examFocus === 'step2' && !hasStep2) return;
+      
+      const stepIdx = parts.findIndex(p => p.toLowerCase().includes('step1') || p.toLowerCase().includes('step2'));
+      if (stepIdx === -1 || stepIdx + 1 >= parts.length) return;
+      
+      let resourceRaw = parts[stepIdx + 1].replace(/^#/, '');
+      
+      if (!resourceRaw || resourceRaw.startsWith('^') || resourceRaw.startsWith('!') || resourceRaw === 'Subjects' || resourceRaw === 'Resources_by_rotation') {
+        return;
+      }
 
-        const cleanResourceName = resourceMap[resourceRaw] || resourceRaw;
+      // Skip Extra tags if base tag exists
+      const lastPart = parts[parts.length - 1];
+      if (lastPart && lastPart.toLowerCase() === 'extra') {
+        let basePathParts = parts.slice(stepIdx + 2, -1).map(p => p.replace(/^#/, '').replace(/_/g, ' '));
+        basePathParts = basePathParts.filter(p => p && !p.match(/AK Step/i) && !p.match(/AK Other/i));
+        const baseVideoName = basePathParts.join(' > ');
+        if (baseVideoNames.has(baseVideoName)) {
+          return; // Skip this Extra tag since base exists
+        }
+      }
 
-        let videoPathParts = parts.slice(stepIdx + 2).map(p => p.replace(/^#/, '').replace(/_/g, ' '));
-        videoPathParts = videoPathParts.filter(p => p && !p.match(/AK Step/i) && !p.match(/AK Other/i));
-        
-        const cleanVideoName = videoPathParts.join(' > ');
-        if (cleanVideoName) {
-          if (!videos[cleanResourceName]) {
-            videos[cleanResourceName] = [];
-          }
-          if (!videos[cleanResourceName].includes(cleanVideoName)) {
-            videos[cleanResourceName].push(cleanVideoName);
-          }
+      const resourceMap = {
+        'B&B': 'Boards & Beyond',
+        'SketchyMicro': 'Sketchy Micro',
+        'SketchyPharm': 'Sketchy Pharm',
+        'SketchyPath': 'Sketchy Pathology',
+        'SketchyAnatomy': 'Sketchy Anatomy',
+        'SketchyBiochem': 'Sketchy Biochem',
+        'SketchyBiostats/Epidemiology': 'Sketchy Biostats/Epidemiology',
+        'SketchyImmunology': 'Sketchy Immunology',
+        'SketchyPhysiology': 'Sketchy Physiology',
+        'DirtyMedicine': 'Dirty Medicine',
+        'FirstAid': 'First Aid',
+        'NinjaNerd': 'Ninja Nerd',
+        'DivineIntervention': 'Divine Intervention',
+        'SketchyFM': 'Sketchy Family Medicine',
+        'SketchyIM': 'Sketchy Internal Medicine',
+        'SketchyNeurology': 'Sketchy Neurology',
+        'SketchyOBGYN': 'Sketchy OBGYN',
+        'SketchyPeds': 'Sketchy Pediatrics',
+        'SketchyPsych': 'Sketchy Psychiatry',
+        'SketchySurgery': 'Sketchy Surgery',
+        'Low/HighYield': 'Low/High Yield',
+        'USMLERx': 'USMLE Rx',
+        'OME': 'OnlineMedEd',
+        'OME_banner': 'OnlineMedEd Banner',
+        'Resources_by_rotation': 'Resources by Rotation'
+      };
+
+      const cleanResourceName = resourceMap[resourceRaw] || resourceRaw;
+
+      let videoPathParts = parts.slice(stepIdx + 2).map(p => p.replace(/^#/, '').replace(/_/g, ' '));
+      videoPathParts = videoPathParts.filter(p => p && !p.match(/AK Step/i) && !p.match(/AK Other/i) && p.toLowerCase() !== 'extra');
+      
+      const cleanVideoName = videoPathParts.join(' > ');
+      if (cleanVideoName) {
+        if (!videos[cleanResourceName]) {
+          videos[cleanResourceName] = [];
+        }
+        if (!videos[cleanResourceName].includes(cleanVideoName)) {
+          videos[cleanResourceName].push(cleanVideoName);
         }
       }
     });
