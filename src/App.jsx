@@ -636,7 +636,7 @@ export default function App() {
 
       if (isQuotedMode) {
         setSearchMode('syllabus');
-        const sys = "Dissect the medical syllabus enclosed in quotes into logical categories. For each category, generate accurate boolean intersection parameters. MANDATORY: only map core diagnostic nouns, diseases, drugs. Exclude formatting verbs. Return JSON object matches.";
+        const sys = "Dissect the medical syllabus enclosed in quotes into logical categories. For each category, generate flexible search parameters by grouping ALL related core concepts together in one concept group (they will be OR'd together for comprehensive matching). MANDATORY: only map core diagnostic nouns, diseases, drugs. Exclude formatting verbs. Prioritize breadth of coverage. Return JSON object matches.";
         const schema = {
           type: "OBJECT",
           properties: {
@@ -772,18 +772,33 @@ export default function App() {
     const videos = {};
     const baseVideoNames = new Set(); // Track base video names to detect Extra tags
 
+    // Helper function to extract step from first tag part (e.g., "tag:#AK_Step1_v12" -> "step1")
+    const extractStepFromTag = (firstPart) => {
+      if (!firstPart) return null;
+      const lower = firstPart.toLowerCase();
+      if (lower.includes('step1')) return 'step1';
+      if (lower.includes('step2')) return 'step2';
+      return null;
+    };
+
+    // Helper function to check if tag matches exam focus
+    const tagMatchesExamFocus = (tagStepDesignation, examFocus) => {
+      if (!tagStepDesignation) return false;
+      if (examFocus === 'step1') return tagStepDesignation === 'step1';
+      if (examFocus === 'step2') return tagStepDesignation === 'step2';
+      return false;
+    };
+
     // First pass: collect all base video names (without Extra suffix)
     tags.forEach(t => {
       if (!t) return;
       const parts = t.split('::');
       
-      // Determine if this tag is for the selected step
-      const hasStep1 = parts.some(p => p.toLowerCase().includes('step1'));
-      const hasStep2 = parts.some(p => p.toLowerCase().includes('step2'));
+      // Extract step from the first part (the tag source like "tag:#AK_Step1_v12")
+      const tagStep = extractStepFromTag(parts[0]);
       
       // Skip if step doesn't match exam focus
-      if (examFocus === 'step1' && !hasStep1) return;
-      if (examFocus === 'step2' && !hasStep2) return;
+      if (!tagMatchesExamFocus(tagStep, examFocus)) return;
       
       const stepIdx = parts.findIndex(p => p.toLowerCase().includes('step1') || p.toLowerCase().includes('step2'));
       if (stepIdx === -1 || stepIdx + 1 >= parts.length) return;
@@ -808,13 +823,11 @@ export default function App() {
       if (!t) return;
       const parts = t.split('::');
       
-      // Determine if this tag is for the selected step
-      const hasStep1 = parts.some(p => p.toLowerCase().includes('step1'));
-      const hasStep2 = parts.some(p => p.toLowerCase().includes('step2'));
+      // Extract step from the first part (the tag source like "tag:#AK_Step1_v12")
+      const tagStep = extractStepFromTag(parts[0]);
       
       // Skip if step doesn't match exam focus
-      if (examFocus === 'step1' && !hasStep1) return;
-      if (examFocus === 'step2' && !hasStep2) return;
+      if (!tagMatchesExamFocus(tagStep, examFocus)) return;
       
       const stepIdx = parts.findIndex(p => p.toLowerCase().includes('step1') || p.toLowerCase().includes('step2'));
       if (stepIdx === -1 || stepIdx + 1 >= parts.length) return;
