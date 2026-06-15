@@ -1,35 +1,43 @@
 export default async function handler(req, res) {
+  // --- Origin check: restrict to allowed domains ---
+  const allowedOrigins = process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+    : null;
+
+  const origin = req.headers.origin || req.headers.referer || '';
+
+  if (allowedOrigins) {
+    const isAllowed = allowedOrigins.some(allowed => origin.startsWith(allowed));
+    if (!isAllowed) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+
   try {
-    const githubApiUrl = "https://api.github.com/repos/cheneri6/anki-database/contents/AnKing_Step_Deck.csv?ref=main";
+    const githubApiUrl = process.env.GITHUB_CSV_URL
+      || "https://api.github.com/repos/cheneri6/anki-database/contents/AnKing_Step_Deck.csv?ref=main";
     const token = process.env.GITHUB_TOKEN;
 
-    console.log('[api/deck] request received');
     if (!token) {
-      console.error('[api/deck] missing environment variable GITHUB_TOKEN');
-      return res.status(500).json({ error: "GitHub token (GITHUB_TOKEN) is not configured in Vercel Environment Variables." });
+      return res.status(500).json({ error: "Server configuration error." });
     }
 
-    console.log('[api/deck] fetching GitHub contents from:', githubApiUrl);
     const response = await fetch(githubApiUrl, {
       headers: {
         "Authorization": `Bearer ${token}`,
         "Accept": "application/vnd.github.raw"
       }
     });
-    console.log('[api/deck] GitHub response status:', response.status, response.statusText);
 
     if (!response.ok) {
-      const errorBody = await response.text().catch(() => 'unable to read body');
-      console.error('[api/deck] GitHub fetch failed:', response.status, response.statusText, errorBody);
-      return res.status(response.status).json({ error: `Failed to fetch from GitHub: ${response.statusText}` });
+      return res.status(502).json({ error: "Failed to fetch upstream data." });
     }
 
     const csvData = await response.text();
-    console.log('[api/deck] fetched CSV length:', csvData.length);
     res.setHeader("Content-Type", "text/csv");
     res.status(200).send(csvData);
   } catch (error) {
-    console.error('[api/deck] handler caught error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: "Internal server error." });
   }
 }

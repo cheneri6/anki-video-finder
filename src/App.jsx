@@ -1,302 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   Search, Video, BookOpen, Layers, 
   CheckCircle, Loader2, PlayCircle,
   Sparkles, BrainCircuit, MessageSquare, X, AlignLeft, Trash2,
   ChevronDown, ChevronUp, Settings, Sliders, Key, HelpCircle, Filter, CheckSquare, Square
 } from 'lucide-react';
+import SearchWorker from './worker.js?worker';
+import RESOURCE_MAP from './resourceMap.js';
 
 const DEFAULT_DECK_URL = "/api/deck";
-
-// --- INLINE BACKGROUND WEB WORKER ENGINE ---
-// Keeps search execution off the main UI Thread to avoid performance stuttering
-const workerBlobCode = `
-  let cards = [];
-  let userPreferences = {
-    examFocus: 'step1', 
-    enabledServices: {}
-  };
-
-  function detectDelimiter(text) {
-    const lines = text.split('\\n').slice(0, 50);
-    let commaCount = 0;
-    let tabCount = 0;
-    for (let i = 0; i < lines.length; i++) {
-      const l = lines[i];
-      if (!l.startsWith('#')) {
-        commaCount += (l.match(/,/g) || []).length;
-        tabCount += (l.match(/\\t/g) || []).length;
-      }
-    }
-    return tabCount > commaCount ? '\\t' : ',';
-  }
-
-  function parseData(text) {
-    const delimiter = detectDelimiter(text);
-    const result = [];
-    let row = [];
-    let startValue = 0;
-    let inQuotes = false;
-    
-    for (let i = 0; i < text.length; i++) {
-      const c = text[i];
-      
-      if (c === '"') {
-        inQuotes = !inQuotes;
-      } else if (c === delimiter && !inQuotes) {
-        let val = text.substring(startValue, i);
-        if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) {
-          val = val.substring(1, val.length - 1).replace(/""/g, '"');
-        }
-        row.push(val);
-        startValue = i + 1;
-      } else if (c === '\\n' && !inQuotes) {
-        let val = text.substring(startValue, i);
-        if (val.length > 0 && val.charCodeAt(val.length - 1) === 13) { 
-          val = val.substring(0, val.length - 1);
-        }
-        if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) {
-          val = val.substring(1, val.length - 1).replace(/""/g, '"');
-        }
-        row.push(val);
-        if (row.length > 0) result.push(row);
-        row = [];
-        startValue = i + 1;
-      }
-    }
-    if (startValue < text.length) {
-      let val = text.substring(startValue);
-      if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) {
-        val = val.substring(1, val.length - 1).replace(/""/g, '"');
-      }
-      row.push(val);
-      result.push(row);
-    }
-    return result;
-  }
-
-  function cleanResourceName(raw) {
-    const resourceMap = {
-      'B&B': 'Boards & Beyond',
-      'SketchyMicro': 'Sketchy Micro',
-      'SketchyPharm': 'Sketchy Pharm',
-      'SketchyPath': 'Sketchy Pathology',
-      'SketchyAnatomy': 'Sketchy Anatomy',
-      'SketchyBiochem': 'Sketchy Biochem',
-      'SketchyBiostats/Epidemiology': 'Sketchy Biostats/Epidemiology',
-      'SketchyImmunology': 'Sketchy Immunology',
-      'SketchyPhysiology': 'Sketchy Physiology',
-      'DirtyMedicine': 'Dirty Medicine',
-      'FirstAid': 'First Aid',
-      'NinjaNerd': 'Ninja Nerd',
-      'DivineIntervention': 'Divine Intervention',
-      'SketchyFM': 'Sketchy Family Medicine',
-      'SketchyIM': 'Sketchy Internal Medicine',
-      'SketchyNeurology': 'Sketchy Neurology',
-      'SketchyOBGYN': 'Sketchy OBGYN',
-      'SketchyPeds': 'Sketchy Pediatrics',
-      'SketchyPsych': 'Sketchy Psychiatry',
-      'SketchySurgery': 'Sketchy Surgery',
-      'Low/HighYield': 'Low/High Yield',
-      'USMLERx': 'USMLE Rx',
-      'OME': 'OnlineMedEd',
-      'OME_banner': 'OnlineMedEd Banner',
-      'Resources_by_rotation': 'Resources by Rotation'
-    };
-    return resourceMap[raw] || raw;
-  }
-
-  self.onmessage = function(e) {
-    const { type, payload } = e.data;
-    
-    if (type === 'LOAD_CSV') {
-      try {
-        const rows = parseData(payload);
-        cards = [];
-        
-        let tagsColIdx = -1;
-        for (let i = 0; i < Math.min(20, rows.length); i++) {
-          if (rows[i][0] && typeof rows[i][0] === 'string' && rows[i][0].startsWith('#tags column:')) {
-            const colNum = parseInt(rows[i][0].split(':')[1], 10);
-            if (!isNaN(colNum)) tagsColIdx = colNum - 1;
-            break;
-          }
-        }
-        
-        if (tagsColIdx === -1) {
-          for (let i = 0; i < Math.min(50, rows.length); i++) {
-            const r = rows[i];
-            if (r[0] && typeof r[0] === 'string' && r[0].startsWith('#')) continue;
-            for (let j = 0; j < r.length; j++) {
-              if (r[j] && typeof r[j] === 'string' && r[j].includes('#AK_')) {
-                tagsColIdx = j;
-                break;
-              }
-            }
-            if (tagsColIdx !== -1) break;
-          }
-        }
-        
-        let discoveredStep1Resources = new Set();
-        let discoveredStep2Resources = new Set();
-        
-        for (let i = 0; i < rows.length; i++) {
-          const r = rows[i];
-          if (r.length < 2 || (r[0] && typeof r[0] === 'string' && r[0].startsWith('#'))) continue; 
-          
-          let tags = '';
-          if (tagsColIdx !== -1 && tagsColIdx < r.length) {
-            tags = r[tagsColIdx];
-          } else {
-            tags = r[r.length - 1] || ''; 
-          }
-
-          const tagList = tags.split(' ');
-          tagList.forEach(t => {
-            if (!t) return;
-            const parts = t.split('::');
-            
-            const step1Idx = parts.findIndex(p => p.toLowerCase().includes('step1'));
-            if (step1Idx !== -1 && step1Idx + 1 < parts.length) {
-              let res = parts[step1Idx + 1].replace(/^#/, '');
-              if (res && !res.startsWith('^') && !res.startsWith('!') && res !== 'Subjects') {
-                discoveredStep1Resources.add(cleanResourceName(res));
-              }
-            }
-            
-            const step2Idx = parts.findIndex(p => p.toLowerCase().includes('step2'));
-            if (step2Idx !== -1 && step2Idx + 1 < parts.length) {
-              let res = parts[step2Idx + 1].replace(/^#/, '');
-              if (res && !res.startsWith('^') && !res.startsWith('!') && res !== 'Subjects') {
-                discoveredStep2Resources.add(cleanResourceName(res));
-              }
-            }
-          });
-
-          cards.push({
-            text: r[0] || '',
-            extra: r[1] || '',
-            tags: tags || ''
-          });
-        }
-
-        self.postMessage({ 
-          type: 'LOAD_COMPLETE', 
-          count: cards.length,
-          step1Resources: Array.from(discoveredStep1Resources).sort(),
-          step2Resources: Array.from(discoveredStep2Resources).sort()
-        });
-      } catch (error) {
-        self.postMessage({ type: 'ERROR', payload: error.message });
-      }
-    } 
-    
-    else if (type === 'UPDATE_PREFERENCES') {
-      userPreferences = payload;
-    }
-    
-    else if (type === 'SEARCH') {
-      const { conceptGroups } = payload;
-      let allMatches = [];
-      const lowerConceptGroups = conceptGroups.map(group => group.map(k => k.toLowerCase()));
-      
-      for (let i = 0; i < cards.length; i++) {
-        const c = cards[i];
-        
-        const hasStep1Tag = c.tags.toLowerCase().includes('step1');
-        const hasStep2Tag = c.tags.toLowerCase().includes('step2');
-        
-        if (userPreferences.examFocus === 'step1' && !hasStep1Tag && hasStep2Tag) continue;
-        if (userPreferences.examFocus === 'step2' && !hasStep2Tag && hasStep1Tag) continue;
-
-        let score = 0;
-        let matchCount = 0;
-        const searchPool = (c.text + " " + c.extra).toLowerCase();
-        
-        for (let j = 0; j < lowerConceptGroups.length; j++) {
-          let groupMatched = false;
-          const group = lowerConceptGroups[j];
-          for (let k = 0; k < group.length; k++) {
-            const term = group[k];
-            if (searchPool.includes(term)) {
-              groupMatched = true;
-              score += term.length;
-            }
-          }
-          if (groupMatched) matchCount++;
-        }
-        
-        if (matchCount > 0) {
-          allMatches.push({ card: c, score, matchCount });
-        }
-      }
-      
-      allMatches.sort((a, b) => {
-        if (b.matchCount !== a.matchCount) return b.matchCount - a.matchCount;
-        return b.score - a.score;
-      });
-
-      if (allMatches.length > 0) {
-         const highestMatchCount = allMatches[0].matchCount;
-         const topTier = allMatches.filter(m => m.matchCount === highestMatchCount);
-         self.postMessage({ type: 'SEARCH_COMPLETE', results: topTier.slice(0, 50) });
-      } else {
-         self.postMessage({ type: 'SEARCH_COMPLETE', results: [] });
-      }
-    }
-    
-    else if (type === 'SEARCH_SYLLABUS') {
-      const { categories } = payload;
-      let syllabusResults = {};
-
-      categories.forEach(cat => {
-        let catMatches = new Map();
-
-        cat.searchQueries.forEach(query => {
-           const lowerConceptGroups = query.requiredConcepts.map(group => group.map(k => k.toLowerCase()));
-           
-           for (let i = 0; i < cards.length; i++) {
-              const c = cards[i];
-              
-              const hasStep1Tag = c.tags.toLowerCase().includes('step1');
-              const hasStep2Tag = c.tags.toLowerCase().includes('step2');
-              if (userPreferences.examFocus === 'step1' && !hasStep1Tag && hasStep2Tag) continue;
-              if (userPreferences.examFocus === 'step2' && !hasStep2Tag && hasStep1Tag) continue;
-
-              let matchCount = 0;
-              const searchPool = (c.text + " " + c.extra).toLowerCase();
-
-              for (let j = 0; j < lowerConceptGroups.length; j++) {
-                let groupMatched = false;
-                const group = lowerConceptGroups[j];
-                for (let k = 0; k < group.length; k++) {
-                  if (searchPool.includes(group[k])) {
-                    groupMatched = true;
-                    break;
-                  }
-                }
-                if (groupMatched) matchCount++;
-              }
-
-              if (matchCount === lowerConceptGroups.length && lowerConceptGroups.length > 0) {
-                 if (!catMatches.has(c.text)) {
-                    catMatches.set(c.text, { card: c, score: 1 });
-                 }
-              }
-           }
-        });
-
-        syllabusResults[cat.name] = Array.from(catMatches.values()).slice(0, 40);
-      });
-
-      self.postMessage({ type: 'SEARCH_SYLLABUS_COMPLETE', results: syllabusResults });
-    }
-    
-    else if (type === 'CLEAR_CSV') {
-      cards = [];
-    }
-  };
-`;
 
 // --- INDEXED DB SERVICES FOR OFFLINE STORAGE ---
 const initDB = () => {
@@ -426,11 +138,9 @@ export default function App() {
     setTimeout(() => setSaveToast(false), 2000);
   };
 
-  // Initialize Web Worker securely
+  // Initialize Web Worker via Vite bundled module
   useEffect(() => {
-    const blob = new Blob([workerBlobCode], { type: 'application/javascript' });
-    const workerUrl = URL.createObjectURL(blob);
-    const w = new Worker(workerUrl);
+    const w = new SearchWorker();
     
     w.onmessage = (e) => {
       if (e.data.type === 'LOAD_COMPLETE') {
@@ -506,35 +216,23 @@ export default function App() {
 
     return () => {
       w.terminate();
-      URL.revokeObjectURL(workerUrl);
     };
   }, []);
 
   const fetchRemoteDeck = async () => {
-    console.log('fetchRemoteDeck() start');
-    const endpoint = DEFAULT_DECK_URL;
-    console.log('Fetching remote deck from endpoint:', endpoint);
     setCsvStatus('loading');
     setErrorMsg('');
     try {
-      const response = await fetch(endpoint);
-      console.log('fetchRemoteDeck() response status:', response.status);
+      const response = await fetch(DEFAULT_DECK_URL);
       if (!response.ok) {
-        const bodyText = await response.text();
-        console.error('fetchRemoteDeck() fetch failed:', response.status, response.statusText, bodyText);
         throw new Error(`HTTP Error: ${response.status}`);
       }
       const text = await response.text();
-      console.log('fetchRemoteDeck() response received, bytes:', text.length);
       await saveFileToDB(text);
-      console.log('fetchRemoteDeck() saved CSV to IndexedDB');
       if (worker) {
         worker.postMessage({ type: 'LOAD_CSV', payload: text });
       }
-      console.log('fetchRemoteDeck() posted LOAD_CSV to worker');
-      console.log('fetchRemoteDeck() complete');
     } catch (err) {
-      console.error('fetchRemoteDeck() error:', err);
       setCsvStatus('error');
       setErrorMsg('Remote Deck Fetch Failed. Verify connection configuration.');
     }
@@ -728,14 +426,16 @@ export default function App() {
     return summary;
   };
 
-  const videoSummary = generateVideoSummaryData(results);
+  const videoSummary = useMemo(() => generateVideoSummaryData(results), [results, preferences.enabledServices]);
 
-  const syllabusVideoSummaries = {};
-  if (searchMode === 'syllabus') {
+  const syllabusVideoSummaries = useMemo(() => {
+    if (searchMode !== 'syllabus') return {};
+    const summaries = {};
     Object.entries(syllabusResults).forEach(([catName, cards]) => {
-      syllabusVideoSummaries[catName] = generateVideoSummaryData(cards);
+      summaries[catName] = generateVideoSummaryData(cards);
     });
-  }
+    return summaries;
+  }, [searchMode, syllabusResults, preferences.enabledServices]);
 
   const processWorkerResults = (searchResults) => {
     const formattedCards = searchResults.map(item => ({
@@ -849,35 +549,7 @@ export default function App() {
         }
       }
 
-      const resourceMap = {
-        'B&B': 'Boards & Beyond',
-        'SketchyMicro': 'Sketchy Micro',
-        'SketchyPharm': 'Sketchy Pharm',
-        'SketchyPath': 'Sketchy Pathology',
-        'SketchyAnatomy': 'Sketchy Anatomy',
-        'SketchyBiochem': 'Sketchy Biochem',
-        'SketchyBiostats/Epidemiology': 'Sketchy Biostats/Epidemiology',
-        'SketchyImmunology': 'Sketchy Immunology',
-        'SketchyPhysiology': 'Sketchy Physiology',
-        'DirtyMedicine': 'Dirty Medicine',
-        'FirstAid': 'First Aid',
-        'NinjaNerd': 'Ninja Nerd',
-        'DivineIntervention': 'Divine Intervention',
-        'SketchyFM': 'Sketchy Family Medicine',
-        'SketchyIM': 'Sketchy Internal Medicine',
-        'SketchyNeurology': 'Sketchy Neurology',
-        'SketchyOBGYN': 'Sketchy OBGYN',
-        'SketchyPeds': 'Sketchy Pediatrics',
-        'SketchyPsych': 'Sketchy Psychiatry',
-        'SketchySurgery': 'Sketchy Surgery',
-        'Low/HighYield': 'Low/High Yield',
-        'USMLERx': 'USMLE Rx',
-        'OME': 'OnlineMedEd',
-        'OME_banner': 'OnlineMedEd Banner',
-        'Resources_by_rotation': 'Resources by Rotation'
-      };
-
-      const cleanResourceName = resourceMap[resourceRaw] || resourceRaw;
+      const cleanResourceName = RESOURCE_MAP[resourceRaw] || resourceRaw;
 
       let videoPathParts = parts.slice(stepIdx + 2).map(p => p.replace(/^#/, '').replace(/_/g, ' '));
       videoPathParts = videoPathParts.filter(p => p && !p.match(/AK Step/i) && !p.match(/AK Other/i) && p.toLowerCase() !== 'extra');
@@ -897,9 +569,12 @@ export default function App() {
 
   const formatCardText = (text) => {
     if (!text) return { __html: '' }; 
-    let clean = text.replace(/<[^>]+>/g, ' '); 
+    // Safely strip HTML via DOMParser instead of fragile regex
+    const doc = new DOMParser().parseFromString(text, 'text/html');
+    let clean = doc.body.textContent || '';
     const formatted = clean.replace(/{{c\d+::(.*?)(::.*?)?}}/g, (match, p1) => {
-      return `<span class="inline-block px-1.5 py-0.5 mx-0.5 bg-indigo-100 text-indigo-800 font-bold border-b-2 border-indigo-500 rounded">${p1}</span>`;
+      const escaped = p1.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      return `<span class="inline-block px-1.5 py-0.5 mx-0.5 bg-indigo-100 text-indigo-800 font-bold border-b-2 border-indigo-500 rounded">${escaped}</span>`;
     });
     return { __html: formatted };
   };
@@ -1038,7 +713,8 @@ export default function App() {
     </div>
   );
 
-  const getActiveSettingResources = () => {
+  // Memoized to avoid redundant array creation/sort on every render
+  const activeSettingResources = useMemo(() => {
     let list = [];
     if (preferences.examFocus === 'step1') list = step1Resources;
     else if (preferences.examFocus === 'step2') list = step2Resources;
@@ -1046,11 +722,11 @@ export default function App() {
     
     // Completely filter out Yield tags from scrolled settings so they never pollute dynamic counts
     return list.filter(r => r !== 'Low/High Yield' && r !== 'Low/HighYield').sort();
-  };
+  }, [preferences.examFocus, step1Resources, step2Resources]);
 
   const setAllResourcesSelected = (status) => {
     const updated = { ...preferences.enabledServices };
-    getActiveSettingResources().forEach(r => {
+    activeSettingResources.forEach(r => {
       updated[r] = status;
     });
     savePreferencesLocally({ ...preferences, enabledServices: updated });
@@ -1175,7 +851,7 @@ export default function App() {
                 <div className="flex justify-between text-sm border-b pb-2 border-slate-100">
                   <span className="text-slate-500">Active Resources:</span>
                   <span className="font-bold text-indigo-600">
-                    {Object.entries(preferences.enabledServices || {}).filter(([k, v]) => v && getActiveSettingResources().includes(k)).length} Enabled
+                    {Object.entries(preferences.enabledServices || {}).filter(([k, v]) => v && activeSettingResources.includes(k)).length} Enabled
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
@@ -1342,7 +1018,7 @@ export default function App() {
                       ) : (
                         <div 
                           className="prose prose-sm prose-violet max-w-none text-slate-700 prose-p:leading-relaxed prose-li:my-0.5"
-                          dangerouslySetInnerHTML={{ __html: aiSummary.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br/>').replace(/- /g, '• ') }}
+                          dangerouslySetInnerHTML={{ __html: aiSummary.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br/>').replace(/- /g, '• ') }}
                         />
                       )}
                     </div>
@@ -1519,11 +1195,11 @@ export default function App() {
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">
-                      Filter Scanned Resources ({getActiveSettingResources().length} scanned)
+                      Filter Scanned Resources ({activeSettingResources.length} scanned)
                     </label>
                     
                     {/* BATCH SELECTOR TOGGLES */}
-                    {getActiveSettingResources().length > 0 && (
+                    {activeSettingResources.length > 0 && (
                       <div className="flex gap-1.5">
                         <button
                           onClick={() => setAllResourcesSelected(true)}
@@ -1541,13 +1217,13 @@ export default function App() {
                     )}
                   </div>
                   
-                  {getActiveSettingResources().length === 0 ? (
+                  {activeSettingResources.length === 0 ? (
                     <div className="p-4 rounded-lg bg-slate-50 text-xs text-slate-400 italic text-center border border-dashed">
                       Upload your Anki CSV database first to dynamically populate and filter tag resources.
                     </div>
                   ) : (
                     <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1 border border-slate-100 rounded-lg p-2 bg-slate-50/50 shadow-inner">
-                      {getActiveSettingResources().map((service) => (
+                      {activeSettingResources.map((service) => (
                         <label 
                           key={service}
                           className="flex items-center gap-3 p-2 rounded-md hover:bg-slate-100 cursor-pointer transition-colors text-xs font-medium text-slate-700"

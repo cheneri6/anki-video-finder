@@ -1,6 +1,8 @@
 // --- WEB WORKER BACKGROUND SCRIPT ---
 // Keeps search execution and parsing off the main UI Thread for 50MB+ datasets
 
+import { cleanResourceName } from './resourceMap.js';
+
 let cards = [];
 let userPreferences = {
   examFocus: 'step1', 
@@ -63,38 +65,6 @@ function parseData(text) {
     result.push(row);
   }
   return result;
-}
-
-// Normalizes and cleans raw AnKing tag abbreviations to readable names
-function cleanResourceName(raw) {
-  const resourceMap = {
-    'B&B': 'Boards & Beyond',
-    'SketchyMicro': 'Sketchy Micro',
-    'SketchyPharm': 'Sketchy Pharm',
-    'SketchyPath': 'Sketchy Pathology',
-    'SketchyAnatomy': 'Sketchy Anatomy',
-    'SketchyBiochem': 'Sketchy Biochem',
-    'SketchyBiostats/Epidemiology': 'Sketchy Biostats/Epidemiology',
-    'SketchyImmunology': 'Sketchy Immunology',
-    'SketchyPhysiology': 'Sketchy Physiology',
-    'DirtyMedicine': 'Dirty Medicine',
-    'FirstAid': 'First Aid',
-    'NinjaNerd': 'Ninja Nerd',
-    'DivineIntervention': 'Divine Intervention',
-    'SketchyFM': 'Sketchy Family Medicine',
-    'SketchyIM': 'Sketchy Internal Medicine',
-    'SketchyNeurology': 'Sketchy Neurology',
-    'SketchyOBGYN': 'Sketchy OBGYN',
-    'SketchyPeds': 'Sketchy Pediatrics',
-    'SketchyPsych': 'Sketchy Psychiatry',
-    'SketchySurgery': 'Sketchy Surgery',
-    'Low/HighYield': 'Low/High Yield',
-    'USMLERx': 'USMLE Rx',
-    'OME': 'OnlineMedEd',
-    'OME_banner': 'OnlineMedEd Banner',
-    'Resources_by_rotation': 'Resources by Rotation'
-  };
-  return resourceMap[raw] || raw;
 }
 
 self.onmessage = function(e) {
@@ -196,8 +166,9 @@ self.onmessage = function(e) {
     for (let i = 0; i < cards.length; i++) {
       const c = cards[i];
       
-      const hasStep1Tag = c.tags.toLowerCase().includes('step1');
-      const hasStep2Tag = c.tags.toLowerCase().includes('step2');
+      const tagsLower = c.tags.toLowerCase();
+      const hasStep1Tag = tagsLower.includes('step1');
+      const hasStep2Tag = tagsLower.includes('step2');
       
       if (userPreferences.examFocus === 'step1' && !hasStep1Tag && hasStep2Tag) continue;
       if (userPreferences.examFocus === 'step2' && !hasStep2Tag && hasStep1Tag) continue;
@@ -251,8 +222,9 @@ self.onmessage = function(e) {
            for (let i = 0; i < cards.length; i++) {
               const c = cards[i];
               
-              const hasStep1Tag = c.tags.toLowerCase().includes('step1');
-              const hasStep2Tag = c.tags.toLowerCase().includes('step2');
+              const tagsLower = c.tags.toLowerCase();
+              const hasStep1Tag = tagsLower.includes('step1');
+              const hasStep2Tag = tagsLower.includes('step2');
               if (userPreferences.examFocus === 'step1' && !hasStep1Tag && hasStep2Tag) continue;
               if (userPreferences.examFocus === 'step2' && !hasStep2Tag && hasStep1Tag) continue;
 
