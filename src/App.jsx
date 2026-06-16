@@ -76,7 +76,8 @@ export default function App() {
   const [preferences, setPreferences] = useState({
     examFocus: 'step1', 
     enabledServices: {}, 
-    showYieldTags: true 
+    showYieldTags: true,
+    strictMatching: false
   });
   const [saveToast, setSaveToast] = useState(false);
   
@@ -122,10 +123,21 @@ export default function App() {
   }, []);
 
   const savePreferencesLocally = (newPrefs) => {
+    const isStrictMatchingChanged = newPrefs.strictMatching !== preferences.strictMatching;
     setPreferences(newPrefs);
     localStorage.setItem('anki_video_finder_prefs', JSON.stringify(newPrefs));
     if (worker) {
       worker.postMessage({ type: 'UPDATE_PREFERENCES', payload: newPrefs });
+      
+      if (isStrictMatchingChanged) {
+        if (searchMode === 'syllabus' && extractedSyllabus) {
+          setSearchStatus('searching');
+          worker.postMessage({ type: 'SEARCH_SYLLABUS', payload: { categories: extractedSyllabus.categories } });
+        } else if (searchMode === 'normal' && extractedConcepts.length > 0) {
+          setSearchStatus('searching');
+          worker.postMessage({ type: 'SEARCH', payload: { conceptGroups: extractedConcepts } });
+        }
+      }
     }
     setSaveToast(true);
     setTimeout(() => setSaveToast(false), 2000);
@@ -950,6 +962,45 @@ export default function App() {
 
             {searchStatus === 'complete' && results.length > 0 && (
               <>
+                {/* Dynamic Matching Filter Bar */}
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col sm:flex-row items-center justify-between gap-4 animate-fade-in">
+                  <div className="flex items-center gap-3">
+                    <div className="bg-indigo-50 p-2.5 rounded-lg border border-indigo-100">
+                      <Filter className="w-5 h-5 text-indigo-600" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-slate-800">Concept Matching Filter</h4>
+                      <p className="text-[11px] text-slate-500 leading-snug">
+                        {preferences.strictMatching === true 
+                          ? "Strict Mode active: requires all concepts/details to match." 
+                          : "Relaxed Mode active: focuses on core topics, allowing broader partial matches."}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200 w-full sm:w-auto">
+                    <button
+                      onClick={() => savePreferencesLocally({ ...preferences, strictMatching: false })}
+                      className={`flex-1 sm:flex-initial px-4 py-2 rounded-md text-xs font-bold transition-all ${
+                        preferences.strictMatching !== true
+                          ? "bg-white text-indigo-700 shadow-sm border border-slate-200/50"
+                          : "text-slate-600 hover:text-slate-800"
+                      }`}
+                    >
+                      Relaxed (Broad)
+                    </button>
+                    <button
+                      onClick={() => savePreferencesLocally({ ...preferences, strictMatching: true })}
+                      className={`flex-1 sm:flex-initial px-4 py-2 rounded-md text-xs font-bold transition-all ${
+                        preferences.strictMatching === true
+                          ? "bg-indigo-600 text-white shadow-sm"
+                          : "text-slate-600 hover:text-slate-800"
+                      }`}
+                    >
+                      Strict (Exact)
+                    </button>
+                  </div>
+                </div>
+
                 {searchMode === 'normal' && extractedConcepts.length > 0 && (
                   <InfoBlock title="AI Search Logic (Strict Intersection):" icon={Sparkles} isOpen={isSyllabusLogicExpanded} setIsOpen={setIsSyllabusLogicExpanded}>
                     <div className="flex flex-wrap gap-2 pt-1">
@@ -1207,6 +1258,34 @@ export default function App() {
                       preferences.showYieldTags !== false ? 'bg-amber-200 text-amber-800' : 'bg-slate-200 text-slate-600'
                     }`}>
                       {preferences.showYieldTags !== false ? 'ENABLED' : 'DISABLED'}
+                    </span>
+                  </button>
+                </div>
+
+                {/* Strict vs Relaxed matching switch */}
+                <div className="border-t pt-4 border-slate-100">
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                    Concept Matching Strategy
+                  </label>
+                  <button
+                    onClick={() => savePreferencesLocally({ 
+                      ...preferences, 
+                      strictMatching: preferences.strictMatching === true ? false : true
+                    })}
+                    className={`w-full flex items-center justify-between p-3 rounded-lg border text-sm font-medium transition-all ${
+                      preferences.strictMatching === true 
+                        ? 'bg-indigo-50 text-indigo-900 border-indigo-300 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <Filter className={`w-4 h-4 ${preferences.strictMatching === true ? 'text-indigo-600' : 'text-slate-400'}`} />
+                      Use Strict Concept Intersection matching by default
+                    </span>
+                    <span className={`text-xs px-2 py-0.5 rounded font-bold ${
+                      preferences.strictMatching === true ? 'bg-indigo-200 text-indigo-800' : 'bg-slate-200 text-slate-600'
+                    }`}>
+                      {preferences.strictMatching === true ? 'STRICT' : 'RELAXED'}
                     </span>
                   </button>
                 </div>

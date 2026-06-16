@@ -6,7 +6,8 @@ import { cleanResourceName } from './resourceMap.js';
 let cards = [];
 let userPreferences = {
   examFocus: 'step1', 
-  enabledServices: {}
+  enabledServices: {},
+  strictMatching: false
 };
 
 function detectDelimiter(text) {
@@ -201,7 +202,13 @@ self.onmessage = function(e) {
     });
 
     if (allMatches.length > 0) {
-       self.postMessage({ type: 'SEARCH_COMPLETE', results: allMatches.slice(0, 50) });
+       if (userPreferences.strictMatching === true) {
+         const highestMatchCount = allMatches[0].matchCount;
+         const topTier = allMatches.filter(m => m.matchCount === highestMatchCount);
+         self.postMessage({ type: 'SEARCH_COMPLETE', results: topTier.slice(0, 50) });
+       } else {
+         self.postMessage({ type: 'SEARCH_COMPLETE', results: allMatches.slice(0, 50) });
+       }
       } else {
          self.postMessage({ type: 'SEARCH_COMPLETE', results: [] });
       }
@@ -228,6 +235,7 @@ self.onmessage = function(e) {
 
               let matchCount = 0;
               const searchPool = (c.text + " " + c.extra).toLowerCase();
+              let firstGroupMatched = false;
 
               for (let j = 0; j < lowerConceptGroups.length; j++) {
                 let groupMatched = false;
@@ -238,10 +246,20 @@ self.onmessage = function(e) {
                     break;
                   }
                 }
-                if (groupMatched) matchCount++;
+                if (groupMatched) {
+                  matchCount++;
+                  if (j === 0) firstGroupMatched = true;
+                }
               }
 
-              if (matchCount === lowerConceptGroups.length && lowerConceptGroups.length > 0) {
+              let isMatch = false;
+              if (userPreferences.strictMatching === true) {
+                 isMatch = (matchCount === lowerConceptGroups.length && lowerConceptGroups.length > 0);
+              } else {
+                 isMatch = (lowerConceptGroups.length > 0 && firstGroupMatched);
+              }
+
+              if (isMatch) {
                  if (!catMatches.has(c.text)) {
                     catMatches.set(c.text, { card: c, score: 1 });
                  }
