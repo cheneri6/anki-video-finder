@@ -299,7 +299,16 @@ export default function App() {
           body: JSON.stringify(payload)
         });
         if (res.status === 429) throw new Error("RATE_LIMIT_PAUSE");
-        if (!res.ok) throw new Error(`API Error: ${res.status}`);
+        if (!res.ok) {
+          let errorDetail = "";
+          try {
+            const errData = await res.json();
+            errorDetail = errData.error?.message || `Status ${res.status}`;
+          } catch (_) {
+            errorDetail = `Status ${res.status}`;
+          }
+          throw new Error(errorDetail);
+        }
         const data = await res.json();
         const output = data.candidates?.[0]?.content?.parts?.[0]?.text;
         return jsonSchema ? JSON.parse(output) : output;
@@ -334,23 +343,29 @@ export default function App() {
 
       if (isQuotedMode) {
         setSearchMode('syllabus');
-        const sys = "Dissect the medical syllabus enclosed in quotes into logical categories. For each category, generate flexible search parameters by grouping ALL related core concepts together in one concept group (they will be OR'd together for comprehensive matching). MANDATORY: only map core diagnostic nouns, diseases, drugs. Exclude formatting verbs. Prioritize breadth of coverage. Return JSON object matches.";
+        const sys = "Dissect the medical syllabus enclosed in quotes into logical categories. For each category, generate flexible, high-coverage search parameters.\n\n" +
+          "CRITICAL GUIDELINES FOR BREADTH OF COVERAGE:\n" +
+          "1. AVOID RESTRICTIVE INTERSECTIONS: Do NOT split related terms or sub-details (e.g., 'genetics', 'presentation', 'pathology', 'imaging', 'PFT values', 'diagnosis', 'treatment') into separate required AND concept groups. Anki cards are sparse and use varied terminology (e.g., a card about genetics might use 'autosomal' but not 'genetics').\n" +
+          "2. HIGH-LEVEL CATCH-ALL QUERY: For any major medical condition, disease, drug, or organ system mentioned, always generate a broad, high-level catch-all search query for the entity itself (e.g., ['Alpha-1 Antitrypsin Deficiency', 'a1-AD'] as a single concept group) with NO additional AND constraints. This ensures we pull all cards about the topic.\n" +
+          "3. GROUP SYNONYMS & RELATED ENTITIES: In each search query, group the main entity, its abbreviations, synonyms, and closely related terms into one single concept group (which will be OR'd together). E.g., ['Pneumoconioses', 'silicosis', 'asbestosis', 'coal worker\\'s pneumoconiosis'].\n" +
+          "4. MANDATORY: Only map core diagnostic nouns, diseases, drugs, or key anatomical terms. Exclude formatting verbs and generic academic words.\n\n" +
+          "Prioritize breadth of coverage. Return JSON object matches.";
         const schema = {
-          type: "OBJECT",
+          type: "object",
           properties: {
             categories: {
-              type: "ARRAY",
+              type: "array",
               items: {
-                type: "OBJECT",
+                type: "object",
                 properties: {
-                  name: { type: "STRING" },
+                  name: { type: "string" },
                   searchQueries: {
-                    type: "ARRAY",
+                    type: "array",
                     items: {
-                      type: "OBJECT",
+                      type: "object",
                       properties: {
-                        description: { type: "STRING" },
-                        requiredConcepts: { type: "ARRAY", items: { type: "ARRAY", items: { type: "STRING" } } }
+                        description: { type: "string" },
+                        requiredConcepts: { type: "array", items: { type: "array", items: { type: "string" } } }
                       }
                     }
                   }
@@ -369,7 +384,7 @@ export default function App() {
       } else {
         setSearchMode('normal');
         const sys = "Analyze the user's medical query. Break it down into distinct, required independent concepts to build an AND/OR boolean search query. CRITICAL: ONLY include core medical entities (diseases, drugs, anatomy) as required groups. EXCLUDE generic academic terms or verbs. Return a JSON array of arrays of strings.";
-        const schema = { type: "ARRAY", items: { type: "ARRAY", items: { type: "STRING" } } };
+        const schema = { type: "array", items: { type: "array", items: { type: "string" } } };
         const conceptGroups = await callGeminiSecureAPI(sys, cleanPrompt, schema);
         if (!conceptGroups || conceptGroups.length === 0) {
           throw new Error("Could not extract meaningful concepts from the prompt.");
@@ -379,7 +394,11 @@ export default function App() {
         worker.postMessage({ type: 'SEARCH', payload: { conceptGroups } });
       }
     } catch (err) {
-      setErrorMsg(err.message === "RATE_LIMIT_PAUSE" ? "Google Tier Rate Limit active. Pausing processing queue momentarily..." : "API Error. Validate setup constraints.");
+      if (err.message === "RATE_LIMIT_PAUSE") {
+        setErrorMsg("Google Tier Rate Limit active. Pausing processing queue momentarily...");
+      } else {
+        setErrorMsg(`API Error: ${err.message}`);
+      }
       setSearchStatus('error');
     }
   };
@@ -603,15 +622,15 @@ export default function App() {
       const cardsText = results.slice(0, 30).map(r => r.text).join('\n---\n');
       const sys = "Generate exactly 3 challenging multiple-choice clinical vignette questions based ONLY on the provided flashcard concepts. They should test application of the knowledge, not just rote recall.";
       const schema = {
-        type: "ARRAY",
+        type: "array",
         items: {
-          type: "OBJECT",
+          type: "object",
           properties: {
-            id: { type: "NUMBER" },
-            question: { type: "STRING" },
-            options: { type: "ARRAY", items: { type: "STRING" } },
-            correctAnswerIndex: { type: "NUMBER" },
-            explanation: { type: "STRING" }
+            id: { type: "number" },
+            question: { type: "string" },
+            options: { type: "array", items: { type: "string" } },
+            correctAnswerIndex: { type: "number" },
+            explanation: { type: "string" }
           },
           required: ["id", "question", "options", "correctAnswerIndex", "explanation"]
         }

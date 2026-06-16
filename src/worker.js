@@ -201,9 +201,7 @@ self.onmessage = function(e) {
     });
 
     if (allMatches.length > 0) {
-       const highestMatchCount = allMatches[0].matchCount;
-       const topTier = allMatches.filter(m => m.matchCount === highestMatchCount);
-       self.postMessage({ type: 'SEARCH_COMPLETE', results: topTier.slice(0, 50) });
+       self.postMessage({ type: 'SEARCH_COMPLETE', results: allMatches.slice(0, 50) });
       } else {
          self.postMessage({ type: 'SEARCH_COMPLETE', results: [] });
       }
