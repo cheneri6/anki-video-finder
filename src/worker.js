@@ -9,6 +9,43 @@ let userPreferences = {
   enabledServices: {},
   strictMatching: false
 };
+function includesWholeWord(searchPool, term) {
+  let startIdx = 0;
+  while (true) {
+    const idx = searchPool.indexOf(term, startIdx);
+    if (idx === -1) return false;
+    
+    let beforeOk = true;
+    if (idx > 0) {
+      const charBefore = searchPool.charCodeAt(idx - 1);
+      if (
+        (charBefore >= 97 && charBefore <= 122) ||
+        (charBefore >= 48 && charBefore <= 57) ||
+        charBefore === 95
+      ) {
+        beforeOk = false;
+      }
+    }
+    
+    let afterOk = true;
+    if (idx + term.length < searchPool.length) {
+      const charAfter = searchPool.charCodeAt(idx + term.length);
+      if (
+        (charAfter >= 97 && charAfter <= 122) ||
+        (charAfter >= 48 && charAfter <= 57) ||
+        charAfter === 95
+      ) {
+        afterOk = false;
+      }
+    }
+    
+    if (beforeOk && afterOk) {
+      return true;
+    }
+    
+    startIdx = idx + 1;
+  }
+}
 
 function detectDelimiter(text) {
   const lines = text.split('\n').slice(0, 50);
@@ -163,17 +200,7 @@ self.onmessage = function(e) {
     const { conceptGroups } = payload;
     let allMatches = [];
     
-    // Pre-compile regexes for short terms to check word boundaries, keeping strings for longer ones
-    const regexGroups = conceptGroups.map(group => {
-      return group.map(term => {
-        const lowerTerm = term.toLowerCase();
-        const escaped = lowerTerm.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-        if (lowerTerm.length <= 4) {
-          return new RegExp(`\\b${escaped}\\b`, 'i');
-        }
-        return lowerTerm;
-      });
-    });
+    const lowerConceptGroups = conceptGroups.map(group => group.map(k => k.toLowerCase()));
     
     for (let i = 0; i < cards.length; i++) {
       const c = cards[i];
@@ -189,20 +216,20 @@ self.onmessage = function(e) {
       let matchCount = 0;
       const searchPool = (c.text + " " + c.extra).toLowerCase();
       
-      for (let j = 0; j < regexGroups.length; j++) {
+      for (let j = 0; j < lowerConceptGroups.length; j++) {
         let groupMatched = false;
-        const group = regexGroups[j];
+        const group = lowerConceptGroups[j];
         for (let k = 0; k < group.length; k++) {
-          const pattern = group[k];
-          if (pattern instanceof RegExp) {
-            if (pattern.test(searchPool)) {
+          const term = group[k];
+          if (term.length <= 4) {
+            if (includesWholeWord(searchPool, term)) {
               groupMatched = true;
               score += 10;
             }
           } else {
-            if (searchPool.includes(pattern)) {
+            if (searchPool.includes(term)) {
               groupMatched = true;
-              score += pattern.length;
+              score += term.length;
             }
           }
         }
@@ -240,17 +267,7 @@ self.onmessage = function(e) {
         let catMatches = new Map();
 
         cat.searchQueries.forEach(query => {
-           // Pre-compile regexes for short terms to check word boundaries, keeping strings for longer ones
-           const regexGroups = query.requiredConcepts.map(group => {
-             return group.map(term => {
-               const lowerTerm = term.toLowerCase();
-               const escaped = lowerTerm.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-               if (lowerTerm.length <= 4) {
-                 return new RegExp(`\\b${escaped}\\b`, 'i');
-               }
-               return lowerTerm;
-             });
-           });
+           const lowerConceptGroups = query.requiredConcepts.map(group => group.map(k => k.toLowerCase()));
            
            for (let i = 0; i < cards.length; i++) {
               const c = cards[i];
@@ -265,18 +282,18 @@ self.onmessage = function(e) {
               const searchPool = (c.text + " " + c.extra).toLowerCase();
               let firstGroupMatched = false;
 
-              for (let j = 0; j < regexGroups.length; j++) {
+              for (let j = 0; j < lowerConceptGroups.length; j++) {
                 let groupMatched = false;
-                const group = regexGroups[j];
+                const group = lowerConceptGroups[j];
                 for (let k = 0; k < group.length; k++) {
-                  const pattern = group[k];
-                  if (pattern instanceof RegExp) {
-                    if (pattern.test(searchPool)) {
+                  const term = group[k];
+                  if (term.length <= 4) {
+                    if (includesWholeWord(searchPool, term)) {
                       groupMatched = true;
                       break;
                     }
                   } else {
-                    if (searchPool.includes(pattern)) {
+                    if (searchPool.includes(term)) {
                       groupMatched = true;
                       break;
                     }
