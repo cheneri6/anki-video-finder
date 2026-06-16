@@ -356,12 +356,14 @@ export default function App() {
       if (isQuotedMode) {
         setSearchMode('syllabus');
         const sys = "Dissect the medical syllabus enclosed in quotes into logical categories. For each category, generate flexible, high-coverage search parameters.\n\n" +
-          "CRITICAL GUIDELINES FOR BREADTH OF COVERAGE:\n" +
-          "1. AVOID RESTRICTIVE INTERSECTIONS: Do NOT split related terms or sub-details (e.g., 'genetics', 'presentation', 'pathology', 'imaging', 'PFT values', 'diagnosis', 'treatment') into separate required AND concept groups. Anki cards are sparse and use varied terminology (e.g., a card about genetics might use 'autosomal' but not 'genetics').\n" +
-          "2. HIGH-LEVEL CATCH-ALL QUERY: For any major medical condition, disease, drug, or organ system mentioned, always generate a broad, high-level catch-all search query for the entity itself (e.g., ['Alpha-1 Antitrypsin Deficiency', 'a1-AD'] as a single concept group) with NO additional AND constraints. This ensures we pull all cards about the topic.\n" +
-          "3. DENSELY REPEATED TOPICS: If a specific topic or disease (e.g., a1-AD) is mentioned multiple times or across 3+ sub-objectives within a category, it is a key focal point. You MUST focus heavily on it and generate an extremely broad catch-all search query (e.g., searching for the disease/abbreviations alone) rather than splitting it into multiple restrictive sub-queries, ensuring all relevant cards for that entire topic are fetched.\n" +
-          "4. GROUP SYNONYMS & RELATED ENTITIES: In each search query, group the main entity, its abbreviations, synonyms, and closely related terms into one single concept group (which will be OR'd together). E.g., ['Pneumoconioses', 'silicosis', 'asbestosis', 'coal worker\\'s pneumoconiosis'].\n" +
-          "5. MANDATORY: Only map core diagnostic nouns, diseases, drugs, or key anatomical terms. Exclude formatting verbs and generic academic words.\n\n" +
+          "CRITICAL PARAMETER STRUCTURE FOR RELAXED/STRICT FILTERING:\n" +
+          "For each search query, the `requiredConcepts` array should contain exactly one or two concept groups:\n" +
+          "1. Group 0 (Core Entity): This MUST contain the main disease, drug, or clinical entity names, abbreviations, and synonyms (joined by OR). This is used for Relaxed matching.\n" +
+          "2. Group 1 (Detail Specifiers - Optional): If there are specific sub-topics/objectives mentioned (such as 'genetics', 'presentation', 'pathology', 'imaging', 'PFT values', 'diagnosis', 'treatment', 'liver', 'lung'), group all of these details, their synonyms, and related terms into this second single concept group. This is used in combination with Group 0 for Strict matching. Do NOT split these details into separate groups (i.e., keep requiredConcepts length to 2 max).\n\n" +
+          "GUIDELINES FOR COVERAGE:\n" +
+          "- AVOID OVER-SPARSING: Do not create separate AND concept groups for every verb or qualifier.\n" +
+          "- DENSELY REPEATED TOPICS: If a specific topic or disease is mentioned multiple times or across 3+ sub-objectives within a category, generate a query with ONLY Group 0 (no Group 1) to ensure relaxed and strict searches are equally broad for that key topic.\n" +
+          "- MANDATORY: Only map core diagnostic nouns, diseases, drugs, or key anatomical terms. Exclude formatting verbs and generic academic words.\n\n" +
           "Prioritize breadth of coverage. Return JSON object matches.";
         const schema = {
           type: "object",
