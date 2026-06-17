@@ -59,12 +59,12 @@ const clearFileFromDB = async () => {
 };
 
 const VIDEO_COLORS = {
-  green: {
-    bg: 'bg-emerald-50 hover:bg-emerald-100/80 border-emerald-200 text-emerald-800',
-    bgActive: 'bg-emerald-100 border-indigo-600 text-emerald-900 font-semibold ring-2 ring-indigo-500/20',
-    badge: 'bg-emerald-100 text-emerald-700',
-    dot: 'bg-emerald-500',
-    label: 'Watched'
+  blue: {
+    bg: 'bg-blue-50 hover:bg-blue-100/80 border-blue-200 text-blue-800',
+    bgActive: 'bg-blue-100 border-indigo-600 text-blue-900 font-semibold ring-2 ring-indigo-500/20',
+    badge: 'bg-blue-100 text-blue-700',
+    dot: 'bg-blue-500',
+    label: 'In Progress'
   },
   yellow: {
     bg: 'bg-amber-50 hover:bg-amber-100/80 border-amber-200 text-amber-800',
@@ -72,13 +72,6 @@ const VIDEO_COLORS = {
     badge: 'bg-amber-100 text-amber-700',
     dot: 'bg-amber-500',
     label: 'Plan to Watch'
-  },
-  blue: {
-    bg: 'bg-blue-50 hover:bg-blue-100/80 border-blue-200 text-blue-800',
-    bgActive: 'bg-blue-100 border-indigo-600 text-blue-900 font-semibold ring-2 ring-indigo-500/20',
-    badge: 'bg-blue-100 text-blue-700',
-    dot: 'bg-blue-500',
-    label: 'In Progress'
   },
   purple: {
     bg: 'bg-purple-50 hover:bg-purple-100/80 border-purple-200 text-purple-800',
@@ -93,6 +86,13 @@ const VIDEO_COLORS = {
     badge: 'bg-rose-100 text-rose-700',
     dot: 'bg-rose-500',
     label: 'Flagged'
+  },
+  green: {
+    bg: 'bg-emerald-50 hover:bg-emerald-100/80 border-emerald-200 text-emerald-800',
+    bgActive: 'bg-emerald-100 border-indigo-600 text-emerald-900 font-semibold ring-2 ring-indigo-500/20',
+    badge: 'bg-emerald-100 text-emerald-700',
+    dot: 'bg-emerald-500',
+    label: 'Watched'
   }
 };
 
