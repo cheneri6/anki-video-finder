@@ -58,6 +58,44 @@ const clearFileFromDB = async () => {
   });
 };
 
+const VIDEO_COLORS = {
+  green: {
+    bg: 'bg-emerald-50 hover:bg-emerald-100/80 border-emerald-200 text-emerald-800',
+    bgActive: 'bg-emerald-100 border-indigo-600 text-emerald-900 font-semibold ring-2 ring-indigo-500/20',
+    badge: 'bg-emerald-100 text-emerald-700',
+    dot: 'bg-emerald-500',
+    label: 'Watched'
+  },
+  yellow: {
+    bg: 'bg-amber-50 hover:bg-amber-100/80 border-amber-200 text-amber-800',
+    bgActive: 'bg-amber-100 border-indigo-600 text-amber-900 font-semibold ring-2 ring-indigo-500/20',
+    badge: 'bg-amber-100 text-amber-700',
+    dot: 'bg-amber-500',
+    label: 'Plan to Watch'
+  },
+  blue: {
+    bg: 'bg-blue-50 hover:bg-blue-100/80 border-blue-200 text-blue-800',
+    bgActive: 'bg-blue-100 border-indigo-600 text-blue-900 font-semibold ring-2 ring-indigo-500/20',
+    badge: 'bg-blue-100 text-blue-700',
+    dot: 'bg-blue-500',
+    label: 'In Progress'
+  },
+  purple: {
+    bg: 'bg-purple-50 hover:bg-purple-100/80 border-purple-200 text-purple-800',
+    bgActive: 'bg-purple-100 border-indigo-600 text-purple-900 font-semibold ring-2 ring-indigo-500/20',
+    badge: 'bg-purple-100 text-purple-700',
+    dot: 'bg-purple-500',
+    label: 'Review Needed'
+  },
+  rose: {
+    bg: 'bg-rose-50 hover:bg-rose-100/80 border-rose-200 text-rose-800',
+    bgActive: 'bg-rose-100 border-indigo-600 text-rose-900 font-semibold ring-2 ring-indigo-500/20',
+    badge: 'bg-rose-100 text-rose-700',
+    dot: 'bg-rose-500',
+    label: 'Flagged'
+  }
+};
+
 export default function App() {
   const [worker, setWorker] = useState(null);
   const [csvStatus, setCsvStatus] = useState('idle'); 
@@ -93,7 +131,48 @@ export default function App() {
   
   // MULTI-SELECT ARRAY AND EXPLICIT SECTION ACCORDION CONTROLS
   const [selectedVideoFilters, setSelectedVideoFilters] = useState([]); 
-  const [isSyllabusLogicExpanded, setIsSyllabusLogicExpanded] = useState(true);
+  const [isSyllabusLogicExpanded, setIsSyllabusLogicExpanded] = useState(false);
+  const [videoColors, setVideoColors] = useState(() => {
+    try {
+      const saved = localStorage.getItem('anki_video_colors');
+      return saved ? JSON.parse(saved) : {};
+    } catch (e) {
+      return {};
+    }
+  });
+  const [contextMenu, setContextMenu] = useState(null);
+  const [showTrackedDropdown, setShowTrackedDropdown] = useState(false);
+  const [showWhatsNew, setShowWhatsNew] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem('anki_video_colors', JSON.stringify(videoColors));
+  }, [videoColors]);
+
+  // Handle click outside to close dropdowns and context menu
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      setContextMenu(null);
+      const headerControls = document.getElementById('header-controls');
+      if (headerControls && !headerControls.contains(e.target)) {
+        setShowTrackedDropdown(false);
+        setShowWhatsNew(false);
+      }
+    };
+
+    window.addEventListener('click', handleOutsideClick);
+    return () => {
+      window.removeEventListener('click', handleOutsideClick);
+    };
+  }, []);
+
+  const handleVideoRightClick = (e, videoName) => {
+    e.preventDefault();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      videoName
+    });
+  };
 
   // AI Features State
   const [summaryStatus, setSummaryStatus] = useState('idle');
@@ -796,13 +875,186 @@ export default function App() {
           </div>
           
           <div className="flex items-center gap-4">
-            <button
-              onClick={() => setShowSettings(true)}
-              className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 py-1.5 px-3 rounded-lg border border-slate-200 font-medium text-sm transition-all shadow-sm"
-            >
-              <Settings className="w-4 h-4 text-slate-500" />
-              Settings
-            </button>
+            <div id="header-controls" className="flex items-center gap-3 relative">
+              {/* Tracked Videos Button */}
+              <button
+                onClick={() => {
+                  setShowWhatsNew(false);
+                  setShowTrackedDropdown(!showTrackedDropdown);
+                }}
+                className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 py-1.5 px-3 rounded-lg border border-slate-200 font-medium text-sm transition-all shadow-sm relative"
+              >
+                <Video className="w-4 h-4 text-slate-500" />
+                Tracked Videos
+                {Object.keys(videoColors).length > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 bg-indigo-600 text-white text-[10px] w-5 h-5 rounded-full flex items-center justify-center font-bold">
+                    {Object.keys(videoColors).length}
+                  </span>
+                )}
+              </button>
+
+              {/* What's New Button */}
+              <button
+                onClick={() => {
+                  setShowTrackedDropdown(false);
+                  setShowWhatsNew(!showWhatsNew);
+                }}
+                className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 py-1.5 px-3 rounded-lg border border-slate-200 font-medium text-sm transition-all shadow-sm"
+              >
+                <HelpCircle className="w-4 h-4 text-slate-500" />
+                What's New
+              </button>
+
+              {/* Settings Button */}
+              <button
+                onClick={() => {
+                  setShowTrackedDropdown(false);
+                  setShowWhatsNew(false);
+                  setShowSettings(true);
+                }}
+                className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 py-1.5 px-3 rounded-lg border border-slate-200 font-medium text-sm transition-all shadow-sm"
+              >
+                <Settings className="w-4 h-4 text-slate-500" />
+                Settings
+              </button>
+
+              {/* Tracked Videos Dropdown */}
+              {showTrackedDropdown && (() => {
+                const colorGroups = { green: [], yellow: [], blue: [], purple: [], rose: [] };
+                Object.entries(videoColors).forEach(([name, color]) => {
+                  if (colorGroups[color]) {
+                    colorGroups[color].push(name);
+                  }
+                });
+
+                return (
+                  <div className="absolute top-12 right-24 w-96 bg-white border border-slate-200 rounded-xl shadow-xl z-50 p-4 animate-fade-in text-slate-800">
+                    <div className="flex items-center justify-between border-b pb-2 mb-3">
+                      <h3 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+                        <Video className="w-4 h-4 text-indigo-600" />
+                        Tracked Videos Manager
+                      </h3>
+                      <button 
+                        onClick={() => setShowTrackedDropdown(false)}
+                        className="p-1 text-slate-400 hover:text-slate-600 rounded"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {Object.keys(videoColors).length === 0 ? (
+                      <div className="py-8 text-center text-slate-400 text-xs leading-relaxed">
+                        <p className="font-semibold mb-1">No tracked videos yet</p>
+                        <p>Right-click any video in the recommended list below to assign a color-coded status.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4 max-h-[350px] overflow-y-auto pr-1">
+                        {Object.entries(VIDEO_COLORS).map(([colorKey, colorConfig]) => {
+                          const list = colorGroups[colorKey] || [];
+                          if (list.length === 0) return null;
+                          return (
+                            <div key={colorKey} className="space-y-1.5">
+                              <div className="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
+                                <span className={`w-2.5 h-2.5 rounded-full ${colorConfig.dot}`}></span>
+                                <span>{colorConfig.label} ({list.length})</span>
+                              </div>
+                              <div className="space-y-1 pl-4">
+                                {list.map(videoName => {
+                                  const isFiltered = selectedVideoFilters.includes(videoName);
+                                  return (
+                                    <div key={videoName} className="flex items-center justify-between gap-3 text-xs p-1.5 rounded hover:bg-slate-50 border border-transparent transition-colors">
+                                      <button
+                                        onClick={() => handleToggleVideoFilter(videoName)}
+                                        className={`text-left hover:underline select-none truncate max-w-[200px] ${isFiltered ? 'font-bold text-indigo-600' : 'text-slate-700'}`}
+                                        title={isFiltered ? "Click to remove filter" : "Click to filter cards by this video"}
+                                      >
+                                        {videoName}
+                                      </button>
+                                      <div className="flex items-center gap-1.5 shrink-0">
+                                        {/* Color change dots */}
+                                        {Object.entries(VIDEO_COLORS).map(([key, config]) => (
+                                          <button
+                                            key={key}
+                                            onClick={() => {
+                                              setVideoColors(prev => ({ ...prev, [videoName]: key }));
+                                            }}
+                                            className={`w-3 h-3 rounded-full ${config.dot} transition-transform hover:scale-125 border ${key === colorKey ? 'border-slate-800 scale-110' : 'border-transparent'}`}
+                                            title={`Move to ${config.label}`}
+                                          />
+                                        ))}
+                                        {/* Clear button */}
+                                        <button
+                                          onClick={() => {
+                                            setVideoColors(prev => {
+                                              const copy = { ...prev };
+                                              delete copy[videoName];
+                                              return copy;
+                                            });
+                                          }}
+                                          className="p-0.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                                          title="Remove status tracking"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* What's New Dropdown */}
+              {showWhatsNew && (
+                <div className="absolute top-12 right-0 w-80 bg-white border border-slate-200 rounded-xl shadow-xl z-50 p-4 animate-fade-in text-slate-800">
+                  <div className="flex items-center justify-between border-b pb-2 mb-3">
+                    <h3 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-indigo-600" />
+                      What's New & App Guide
+                    </h3>
+                    <button 
+                      onClick={() => setShowWhatsNew(false)}
+                      className="p-1 text-slate-400 hover:text-slate-600 rounded"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="space-y-4 text-xs leading-relaxed max-h-[350px] overflow-y-auto pr-1">
+                    <div>
+                      <h4 className="font-bold text-slate-900 mb-1.5 uppercase tracking-wider text-[10px] text-indigo-600">
+                        🚀 App Capabilities
+                      </h4>
+                      <ul className="list-disc pl-4 space-y-1 text-slate-600">
+                        <li><strong>Syllabus Parsing:</strong> Paste syllabus text inside quotes to automatically structure search queries.</li>
+                        <li><strong>Multi-Resource Search:</strong> Finds cards from Boards & Beyond, Pathoma, Sketchy, Costanzo, Bootcamp, and more.</li>
+                        <li><strong>Interactive Quizzes:</strong> Dynamically generates MCQ pre-test vignettes based on card contents.</li>
+                        <li><strong>Card Explanations:</strong> Ask AI to explain specific clinical concepts or card rationales.</li>
+                        <li><strong>Offline Persistence:</strong> Syncs your deck to IndexedDB for instant browser search speeds.</li>
+                      </ul>
+                    </div>
+
+                    <div className="border-t pt-3">
+                      <h4 className="font-bold text-slate-900 mb-1.5 uppercase tracking-wider text-[10px] text-indigo-600">
+                        ✨ Recent Updates
+                      </h4>
+                      <ul className="list-disc pl-4 space-y-1 text-slate-600">
+                        <li><strong>Matching Mode Switch:</strong> Toggle between Relaxed (broad matching) and Strict (exact concept intersection) directly in search results.</li>
+                        <li><strong>Video Progress Tracker:</strong> Right-click recommended videos to set Watched/Plan/In Progress status with pastel themes.</li>
+                        <li><strong>Tracked Videos Dropdown:</strong> Dashboard to view all colored videos, modify status, and quick-filter matching cards.</li>
+                        <li><strong>Yield Tags Toggle:</strong> Display or hide card yield information (adjustable under Settings).</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
 
             <div className="flex items-center text-sm font-medium">
               {csvStatus === 'ready' && (
@@ -1103,6 +1355,8 @@ export default function App() {
                       preferences={preferences}
                       selectedVideoFilters={selectedVideoFilters}
                       handleToggleVideoFilter={handleToggleVideoFilter}
+                      videoColors={videoColors}
+                      onVideoRightClick={handleVideoRightClick}
                     />
                   ) : (
                     <div className="divide-y divide-slate-100 animate-fade-in">
@@ -1112,6 +1366,8 @@ export default function App() {
                         preferences={preferences}
                         selectedVideoFilters={selectedVideoFilters}
                         handleToggleVideoFilter={handleToggleVideoFilter}
+                        videoColors={videoColors}
+                        onVideoRightClick={handleVideoRightClick}
                       />
                       {Object.entries(syllabusVideoSummaries).map(([catName, catSummary]) => (
                         <CollapsibleSection 
@@ -1121,6 +1377,8 @@ export default function App() {
                           preferences={preferences}
                           selectedVideoFilters={selectedVideoFilters}
                           handleToggleVideoFilter={handleToggleVideoFilter}
+                          videoColors={videoColors}
+                          onVideoRightClick={handleVideoRightClick}
                         />
                       ))}
                     </div>
@@ -1479,12 +1737,54 @@ export default function App() {
         </div>
       )}
 
+      {/* Floating Custom Context Menu */}
+      {contextMenu && (
+        <div 
+          className="fixed bg-white border border-slate-200 rounded-lg shadow-lg py-1.5 z-50 w-48 animate-fade-in"
+          style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100 mb-1 select-none">
+            Set Status:
+          </div>
+          {Object.entries(VIDEO_COLORS).map(([key, config]) => (
+            <button
+              key={key}
+              onClick={() => {
+                setVideoColors(prev => ({ ...prev, [contextMenu.videoName]: key }));
+                setContextMenu(null);
+              }}
+              className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 flex items-center gap-2 text-slate-700 transition-colors"
+            >
+              <span className={`w-2.5 h-2.5 rounded-full ${config.dot}`}></span>
+              <span>{config.label}</span>
+            </button>
+          ))}
+          {videoColors[contextMenu.videoName] && (
+            <button
+              onClick={() => {
+                setVideoColors(prev => {
+                  const copy = { ...prev };
+                  delete copy[contextMenu.videoName];
+                  return copy;
+                });
+                setContextMenu(null);
+              }}
+              className="w-full text-left px-3 py-1.5 text-xs hover:bg-red-50 flex items-center gap-2 text-red-600 border-t border-slate-100 mt-1 transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Clear Status</span>
+            </button>
+          )}
+        </div>
+      )}
+
     </div>
   );
 }
 
 // --- OUTSIDE COMPONENTS ---
-const CollapsibleCategory = ({ category, vids, selectedVideoFilters, handleToggleVideoFilter }) => {
+const CollapsibleCategory = ({ category, vids, selectedVideoFilters, handleToggleVideoFilter, videoColors = {}, onVideoRightClick }) => {
   const [isOpen, setIsOpen] = useState(true);
   
   return (
@@ -1501,26 +1801,42 @@ const CollapsibleCategory = ({ category, vids, selectedVideoFilters, handleToggl
         <ul className="space-y-1 mt-2">
           {vids.map((vidObj, idx) => {
             const isCurrentlyFiltered = selectedVideoFilters.includes(vidObj.name);
+            const colorKey = videoColors[vidObj.name];
+            
+            let itemClass = "";
+            let badgeClass = "";
+            
+            if (colorKey && VIDEO_COLORS[colorKey]) {
+              const theme = VIDEO_COLORS[colorKey];
+              itemClass = isCurrentlyFiltered ? theme.bgActive : `${theme.bg} border`;
+              badgeClass = theme.badge;
+            } else {
+              itemClass = isCurrentlyFiltered 
+                ? 'bg-indigo-600 text-white border border-indigo-700 shadow-sm font-medium' 
+                : 'text-slate-600 hover:bg-slate-50 border border-transparent';
+              badgeClass = isCurrentlyFiltered 
+                ? 'bg-indigo-700 text-indigo-100' 
+                : 'bg-indigo-100 text-indigo-700';
+            }
+            
             return (
               <li 
                 key={idx} 
                 onClick={() => handleToggleVideoFilter(vidObj.name)}
-                className={`text-sm flex items-start justify-between gap-3 py-1.5 px-2 -mx-2 rounded-md cursor-pointer transition-all ${
-                  isCurrentlyFiltered 
-                    ? 'bg-indigo-600 text-white border border-indigo-700 shadow-sm font-medium' 
-                    : 'text-slate-600 hover:bg-slate-50'
-                }`}
-                title="Click to toggle multi-select filter"
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  if (onVideoRightClick) {
+                    onVideoRightClick(e, vidObj.name);
+                  }
+                }}
+                className={`text-sm flex items-start justify-between gap-3 py-1.5 px-2 -mx-2 rounded-md cursor-pointer transition-all ${itemClass}`}
+                title="Click to filter | Right-click to color code"
               >
                 <div className="flex items-start gap-2">
                   <span className={`mt-0.5 shrink-0 ${isCurrentlyFiltered ? 'text-white' : 'text-indigo-400'}`}>•</span> 
                   <span>{vidObj.name}</span>
                 </div>
-                <span className={`${
-                  isCurrentlyFiltered 
-                    ? 'bg-indigo-700 text-indigo-100' 
-                    : 'bg-indigo-100 text-indigo-700'
-                } px-1.5 py-0.5 rounded text-xs font-bold shrink-0 mt-0.5 transition-colors`}>
+                <span className={`${badgeClass} px-1.5 py-0.5 rounded text-xs font-bold shrink-0 mt-0.5 transition-colors`}>
                   {vidObj.count} card{vidObj.count !== 1 ? 's' : ''}
                 </span>
               </li>
@@ -1532,7 +1848,7 @@ const CollapsibleCategory = ({ category, vids, selectedVideoFilters, handleToggl
   );
 };
 
-const CollapsibleSection = ({ summaryData, title, preferences, selectedVideoFilters, handleToggleVideoFilter }) => {
+const CollapsibleSection = ({ summaryData, title, preferences, selectedVideoFilters, handleToggleVideoFilter, videoColors, onVideoRightClick }) => {
   const [isOpen, setIsOpen] = useState(true);
   
   if (!summaryData) return null;
@@ -1567,6 +1883,8 @@ const CollapsibleSection = ({ summaryData, title, preferences, selectedVideoFilt
               vids={vids} 
               selectedVideoFilters={selectedVideoFilters}
               handleToggleVideoFilter={handleToggleVideoFilter}
+              videoColors={videoColors}
+              onVideoRightClick={onVideoRightClick}
             />
           ))}
           
