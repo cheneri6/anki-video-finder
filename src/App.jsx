@@ -140,6 +140,14 @@ export default function App() {
       return {};
     }
   });
+  const [videoCategories, setVideoCategories] = useState(() => {
+    try {
+      const saved = localStorage.getItem('anki_video_categories');
+      return saved ? JSON.parse(saved) : {};
+    } catch (e) {
+      return {};
+    }
+  });
   const [contextMenu, setContextMenu] = useState(null);
   const [showTrackedDropdown, setShowTrackedDropdown] = useState(false);
   const [showWhatsNew, setShowWhatsNew] = useState(false);
@@ -149,6 +157,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('anki_video_colors', JSON.stringify(videoColors));
   }, [videoColors]);
+
+  useEffect(() => {
+    localStorage.setItem('anki_video_categories', JSON.stringify(videoCategories));
+  }, [videoCategories]);
 
   // Handle click outside to close dropdowns and context menu
   useEffect(() => {
@@ -167,11 +179,12 @@ export default function App() {
     };
   }, []);
 
-  const handleVideoRightClick = (e, videoName) => {
+  const handleVideoRightClick = (e, category, videoName) => {
     e.preventDefault();
     setContextMenu({
       x: e.clientX,
       y: e.clientY,
+      category,
       videoName
     });
   };
@@ -552,6 +565,32 @@ export default function App() {
     return summaries;
   }, [searchMode, syllabusResults, preferences.enabledServices]);
 
+  const updateCategoriesFromResults = (flatCards) => {
+    const newCats = {};
+    let updated = false;
+    flatCards.forEach(item => {
+      Object.entries(item.extractedVideos).forEach(([resourceName, videosList]) => {
+        const normalizedCategory = resourceName === 'B&B' ? 'Boards & Beyond' : 
+                                   resourceName === 'SketchyMicro' ? 'Sketchy Micro' : 
+                                   resourceName === 'SketchyPharm' ? 'Sketchy Pharm' : 
+                                   resourceName === 'SketchyPath' ? 'Sketchy Pathology' : 
+                                   resourceName;
+        
+        if (normalizedCategory === 'Low/High Yield' || normalizedCategory === 'Low/HighYield') return;
+        
+        videosList.forEach(v => {
+          if (videoColors[v] && !videoCategories[v]) {
+            newCats[v] = normalizedCategory;
+            updated = true;
+          }
+        });
+      });
+    });
+    if (updated) {
+      setVideoCategories(prev => ({ ...prev, ...newCats }));
+    }
+  };
+
   const processWorkerResults = (searchResults) => {
     const formattedCards = searchResults.map(item => ({
       ...item.card,
@@ -560,6 +599,7 @@ export default function App() {
     }));
     setResults(formattedCards);
     setSearchStatus('complete');
+    updateCategoriesFromResults(formattedCards);
   };
 
   const processWorkerSyllabusResults = (syllabusResMap) => {
@@ -580,6 +620,7 @@ export default function App() {
     setSyllabusResults(formattedSyllabusMap);
     setResults(flatResults); 
     setSearchStatus('complete');
+    updateCategoriesFromResults(flatResults);
   };
 
   const parseTagsForVideos = (tagsStr, examFocus = 'step1') => {
@@ -814,7 +855,7 @@ export default function App() {
     
     const queries = [];
     videoNamesList.forEach(videoName => {
-      const category = findCategoryForVideo(videoName);
+      const category = findCategoryForVideo(videoName) || videoCategories[videoName];
       if (category) {
         const rawKey = Object.keys(RESOURCE_MAP).find(k => RESOURCE_MAP[k] === category) || category;
         const rawTagKey = rawKey.startsWith('#') ? rawKey : `#${rawKey}`;
@@ -1063,7 +1104,7 @@ export default function App() {
                               <div className="space-y-1 pl-4">
                                 {list.map(videoName => {
                                   const isFiltered = selectedVideoFilters.includes(videoName);
-                                  const videoCategory = findCategoryForVideo(videoName);
+                                  const videoCategory = findCategoryForVideo(videoName) || videoCategories[videoName];
                                   return (
                                     <div key={videoName} className="flex items-center justify-between gap-3 text-xs p-1.5 rounded hover:bg-slate-50 border border-transparent transition-colors">
                                       <button
@@ -1089,6 +1130,9 @@ export default function App() {
                                             key={key}
                                             onClick={() => {
                                               setVideoColors(prev => ({ ...prev, [videoName]: key }));
+                                              if (videoCategory && !videoCategories[videoName]) {
+                                                setVideoCategories(prev => ({ ...prev, [videoName]: videoCategory }));
+                                              }
                                             }}
                                             className={`w-3 h-3 rounded-full ${config.dot} transition-transform hover:scale-125 border ${key === colorKey ? 'border-slate-800 scale-110' : 'border-transparent'}`}
                                             title={`Move to ${config.label}`}
@@ -1098,6 +1142,11 @@ export default function App() {
                                         <button
                                           onClick={() => {
                                             setVideoColors(prev => {
+                                              const copy = { ...prev };
+                                              delete copy[videoName];
+                                              return copy;
+                                            });
+                                            setVideoCategories(prev => {
                                               const copy = { ...prev };
                                               delete copy[videoName];
                                               return copy;
@@ -1942,6 +1991,9 @@ export default function App() {
               key={key}
               onClick={() => {
                 setVideoColors(prev => ({ ...prev, [contextMenu.videoName]: key }));
+                if (contextMenu.category) {
+                  setVideoCategories(prev => ({ ...prev, [contextMenu.videoName]: contextMenu.category }));
+                }
                 setContextMenu(null);
               }}
               className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 flex items-center gap-2 text-slate-700 transition-colors"
@@ -1954,6 +2006,11 @@ export default function App() {
             <button
               onClick={() => {
                 setVideoColors(prev => {
+                  const copy = { ...prev };
+                  delete copy[contextMenu.videoName];
+                  return copy;
+                });
+                setVideoCategories(prev => {
                   const copy = { ...prev };
                   delete copy[contextMenu.videoName];
                   return copy;
@@ -2016,7 +2073,7 @@ const CollapsibleCategory = ({ category, vids, selectedVideoFilters, handleToggl
                 onContextMenu={(e) => {
                   e.preventDefault();
                   if (onVideoRightClick) {
-                    onVideoRightClick(e, vidObj.name);
+                    onVideoRightClick(e, category, vidObj.name);
                   }
                 }}
                 className={`text-sm flex items-start justify-between gap-3 py-1.5 px-2 -mx-2 rounded-md cursor-pointer transition-all ${itemClass}`}
