@@ -143,6 +143,7 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState(null);
   const [showTrackedDropdown, setShowTrackedDropdown] = useState(false);
   const [showWhatsNew, setShowWhatsNew] = useState(false);
+  const [showAnkiConnectGuide, setShowAnkiConnectGuide] = useState(false);
 
   useEffect(() => {
     localStorage.setItem('anki_video_colors', JSON.stringify(videoColors));
@@ -1104,11 +1105,51 @@ export default function App() {
                         ✨ Recent Updates
                       </h4>
                       <ul className="list-disc pl-4 space-y-1 text-slate-600">
+                        <li><strong>Desktop Anki Integration:</strong> Click <strong>Browse</strong> next to any recommended video to automatically open and query cards inside desktop Anki.</li>
                         <li><strong>Matching Mode Switch:</strong> Toggle between Relaxed (broad matching) and Strict (exact concept intersection) directly in search results.</li>
                         <li><strong>Video Progress Tracker:</strong> Right-click recommended videos to set Watched/Plan/In Progress status with pastel themes.</li>
                         <li><strong>Tracked Videos Dropdown:</strong> Dashboard to view all colored videos, modify status, and quick-filter matching cards.</li>
                         <li><strong>Yield Tags Toggle:</strong> Display or hide card yield information (adjustable under Settings).</li>
                       </ul>
+                    </div>
+
+                    <div className="border-t pt-3">
+                      <button 
+                        onClick={() => setShowAnkiConnectGuide(!showAnkiConnectGuide)}
+                        className="w-full flex items-center justify-between text-left font-bold text-slate-900 mb-1.5 uppercase tracking-wider text-[10px] text-indigo-600 hover:text-indigo-800 transition-colors focus:outline-none"
+                      >
+                        <span>⚙️ AnkiConnect Setup Guide</span>
+                        <span className="text-[9px] font-normal lowercase bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-100">
+                          {showAnkiConnectGuide ? "hide" : "show details"}
+                        </span>
+                      </button>
+                      
+                      {showAnkiConnectGuide ? (
+                        <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 mt-2 text-[10px] space-y-2 text-slate-600 font-normal leading-relaxed animate-slide-down">
+                          <p>To enable direct communication between this webpage and desktop Anki:</p>
+                          <ol className="list-decimal pl-4 space-y-1">
+                            <li>In desktop Anki, go to <strong>Tools &gt; Add-ons &gt; Get Add-ons</strong>.</li>
+                            <li>Paste the AnkiConnect code: <code className="bg-slate-200 px-1 py-0.5 rounded font-mono font-bold text-indigo-700">2055492159</code> and install it.</li>
+                            <li>Select <strong>AnkiConnect</strong> in the list, click <strong>Config</strong>, and replace the contents with the following:</li>
+                          </ol>
+                          <pre className="bg-slate-900 text-slate-200 p-2 rounded text-[9px] font-mono overflow-x-auto shadow-inner leading-normal max-w-full">
+{`{
+  "apiKey": null,
+  "apiLogPath": null,
+  "ignoreOriginList": [],
+  "webBindAddress": "127.0.0.1",
+  "webBindPort": 8765,
+  "webCorsOriginList": [
+    "http://localhost",
+    "https://anki-video-finder.vercel.app"
+  ]
+}`}
+                          </pre>
+                          <p className="font-semibold text-slate-700">4. Click OK and restart Anki.</p>
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-slate-500">Need help linking your desktop Anki? Click to view the quick setup steps.</p>
+                      )}
                     </div>
                   </div>
                 </div>
