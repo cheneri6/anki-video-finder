@@ -758,6 +758,52 @@ export default function App() {
 
   const clearAllFilters = () => setSelectedVideoFilters([]);
 
+  const findCategoryForVideo = useCallback((videoName) => {
+    // Check standard videoSummary first
+    for (const [cat, vids] of Object.entries(videoSummary || {})) {
+      if (vids.some(v => v.name === videoName)) return cat;
+    }
+    // Check syllabusVideoSummaries
+    for (const catSummaries of Object.values(syllabusVideoSummaries || {})) {
+      for (const [cat, vids] of Object.entries(catSummaries)) {
+        if (vids.some(v => v.name === videoName)) return cat;
+      }
+    }
+    return null;
+  }, [videoSummary, syllabusVideoSummaries]);
+
+  const handleAnkiBrowse = async (category, videoName) => {
+    // Find raw key mapping
+    const rawKey = Object.keys(RESOURCE_MAP).find(k => RESOURCE_MAP[k] === category) || category;
+    
+    // Convert video name back to tag hierarchy
+    const tagParts = videoName.split(' > ').map(p => p.trim().replace(/ /g, '_'));
+    const tagQuery = `tag:"*::${rawKey}::${tagParts.join('::')}*"`;
+    
+    try {
+      const response = await fetch('http://localhost:8765', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'guiBrowse',
+          version: 6,
+          params: {
+            query: tagQuery
+          }
+        })
+      });
+      
+      const data = await response.json();
+      if (data.error) {
+        alert(`AnkiConnect Error: ${data.error}`);
+      } else {
+        console.log(`Successfully browsed in Anki: ${tagQuery}`);
+      }
+    } catch (err) {
+      alert(`Could not connect to desktop Anki. Please make sure desktop Anki is open and the AnkiConnect add-on is installed and configured.`);
+    }
+  };
+
   const renderCardItem = (item, index) => (
     <div key={index} className="p-5 hover:bg-slate-50 transition-colors border-b border-slate-100 last:border-b-0">
       <div 
@@ -920,7 +966,7 @@ export default function App() {
 
               {/* Tracked Videos Dropdown */}
               {showTrackedDropdown && (() => {
-                const colorGroups = { green: [], yellow: [], blue: [], purple: [], rose: [] };
+                const colorGroups = { blue: [], yellow: [], purple: [], rose: [], green: [] };
                 Object.entries(videoColors).forEach(([name, color]) => {
                   if (colorGroups[color]) {
                     colorGroups[color].push(name);
@@ -961,6 +1007,7 @@ export default function App() {
                               <div className="space-y-1 pl-4">
                                 {list.map(videoName => {
                                   const isFiltered = selectedVideoFilters.includes(videoName);
+                                  const videoCategory = findCategoryForVideo(videoName);
                                   return (
                                     <div key={videoName} className="flex items-center justify-between gap-3 text-xs p-1.5 rounded hover:bg-slate-50 border border-transparent transition-colors">
                                       <button
@@ -971,6 +1018,15 @@ export default function App() {
                                         {videoName}
                                       </button>
                                       <div className="flex items-center gap-1.5 shrink-0">
+                                        {videoCategory && (
+                                          <button
+                                            onClick={() => handleAnkiBrowse(videoCategory, videoName)}
+                                            className="p-0.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
+                                            title="Open in desktop Anki Browse"
+                                          >
+                                            <Search className="w-3.5 h-3.5" />
+                                          </button>
+                                        )}
                                         {/* Color change dots */}
                                         {Object.entries(VIDEO_COLORS).map(([key, config]) => (
                                           <button
@@ -1357,6 +1413,7 @@ export default function App() {
                       handleToggleVideoFilter={handleToggleVideoFilter}
                       videoColors={videoColors}
                       onVideoRightClick={handleVideoRightClick}
+                      onAnkiBrowse={handleAnkiBrowse}
                     />
                   ) : (
                     <div className="divide-y divide-slate-100 animate-fade-in">
@@ -1368,6 +1425,7 @@ export default function App() {
                         handleToggleVideoFilter={handleToggleVideoFilter}
                         videoColors={videoColors}
                         onVideoRightClick={handleVideoRightClick}
+                        onAnkiBrowse={handleAnkiBrowse}
                       />
                       {Object.entries(syllabusVideoSummaries).map(([catName, catSummary]) => (
                         <CollapsibleSection 
@@ -1379,6 +1437,7 @@ export default function App() {
                           handleToggleVideoFilter={handleToggleVideoFilter}
                           videoColors={videoColors}
                           onVideoRightClick={handleVideoRightClick}
+                          onAnkiBrowse={handleAnkiBrowse}
                         />
                       ))}
                     </div>
@@ -1784,7 +1843,7 @@ export default function App() {
 }
 
 // --- OUTSIDE COMPONENTS ---
-const CollapsibleCategory = ({ category, vids, selectedVideoFilters, handleToggleVideoFilter, videoColors = {}, onVideoRightClick }) => {
+const CollapsibleCategory = ({ category, vids, selectedVideoFilters, handleToggleVideoFilter, videoColors = {}, onVideoRightClick, onAnkiBrowse }) => {
   const [isOpen, setIsOpen] = useState(true);
   
   return (
@@ -1836,9 +1895,29 @@ const CollapsibleCategory = ({ category, vids, selectedVideoFilters, handleToggl
                   <span className={`mt-0.5 shrink-0 ${isCurrentlyFiltered ? 'text-white' : 'text-indigo-400'}`}>•</span> 
                   <span>{vidObj.name}</span>
                 </div>
-                <span className={`${badgeClass} px-1.5 py-0.5 rounded text-xs font-bold shrink-0 mt-0.5 transition-colors`}>
-                  {vidObj.count} card{vidObj.count !== 1 ? 's' : ''}
-                </span>
+                
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {onAnkiBrowse && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAnkiBrowse(category, vidObj.name);
+                      }}
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold border transition-all flex items-center gap-0.5 ${
+                        isCurrentlyFiltered 
+                          ? 'bg-indigo-700 border-indigo-500 text-indigo-100 hover:bg-indigo-800' 
+                          : 'bg-white border-slate-200 text-slate-500 hover:border-indigo-300 hover:text-indigo-600 hover:bg-indigo-50/30'
+                      }`}
+                      title="Open in desktop Anki Browse"
+                    >
+                      <Search className="w-2.5 h-2.5" />
+                      <span>Browse</span>
+                    </button>
+                  )}
+                  <span className={`${badgeClass} px-1.5 py-0.5 rounded text-xs font-bold transition-colors`}>
+                    {vidObj.count} card{vidObj.count !== 1 ? 's' : ''}
+                  </span>
+                </div>
               </li>
             );
           })}
@@ -1848,7 +1927,7 @@ const CollapsibleCategory = ({ category, vids, selectedVideoFilters, handleToggl
   );
 };
 
-const CollapsibleSection = ({ summaryData, title, preferences, selectedVideoFilters, handleToggleVideoFilter, videoColors, onVideoRightClick }) => {
+const CollapsibleSection = ({ summaryData, title, preferences, selectedVideoFilters, handleToggleVideoFilter, videoColors, onVideoRightClick, onAnkiBrowse }) => {
   const [isOpen, setIsOpen] = useState(true);
   
   if (!summaryData) return null;
@@ -1885,6 +1964,7 @@ const CollapsibleSection = ({ summaryData, title, preferences, selectedVideoFilt
               handleToggleVideoFilter={handleToggleVideoFilter}
               videoColors={videoColors}
               onVideoRightClick={onVideoRightClick}
+              onAnkiBrowse={onAnkiBrowse}
             />
           ))}
           
