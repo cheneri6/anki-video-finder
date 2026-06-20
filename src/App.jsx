@@ -144,6 +144,7 @@ export default function App() {
   const [showTrackedDropdown, setShowTrackedDropdown] = useState(false);
   const [showWhatsNew, setShowWhatsNew] = useState(false);
   const [showAnkiConnectGuide, setShowAnkiConnectGuide] = useState(false);
+  const [activeTutorialTab, setActiveTutorialTab] = useState('app');
 
   useEffect(() => {
     localStorage.setItem('anki_video_colors', JSON.stringify(videoColors));
@@ -1288,17 +1289,52 @@ export default function App() {
             {/* RESPONSIVE YOUTUBE TUTORIAL PANEL */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
               <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                <PlayCircle className="w-4 h-4 text-indigo-600" /> App Video Tutorial
+                <PlayCircle className="w-4 h-4 text-indigo-600" /> App Tutorials
               </h2>
+              
+              <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200 mb-3 text-[11px] font-bold">
+                <button
+                  onClick={() => setActiveTutorialTab('app')}
+                  className={`flex-1 py-1.5 rounded-md transition-all ${
+                    activeTutorialTab === 'app' 
+                      ? 'bg-white text-indigo-700 shadow-sm border border-slate-200/50' 
+                      : 'text-slate-600 hover:text-slate-800'
+                  }`}
+                >
+                  1. How to Use App
+                </button>
+                <button
+                  onClick={() => setActiveTutorialTab('key')}
+                  className={`flex-1 py-1.5 rounded-md transition-all ${
+                    activeTutorialTab === 'key' 
+                      ? 'bg-white text-indigo-700 shadow-sm border border-slate-200/50' 
+                      : 'text-slate-600 hover:text-slate-800'
+                  }`}
+                >
+                  2. Get API Key
+                </button>
+              </div>
+
               <div className="relative w-full aspect-video rounded-lg overflow-hidden shadow border">
-                <iframe 
-                  className="absolute inset-0 w-full h-full"
-                  src="https://www.youtube.com/embed/nmRW_EvVbL0" 
-                  title="Anki Video Finder Tutorial"
-                  frameBorder="0"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
-                  allowFullScreen
-                ></iframe>
+                {activeTutorialTab === 'app' ? (
+                  <iframe 
+                    className="absolute inset-0 w-full h-full"
+                    src="https://www.youtube.com/embed/olmXN5icdkY" 
+                    title="Anki Video Finder Tutorial"
+                    frameBorder="0"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+                    allowFullScreen
+                  ></iframe>
+                ) : (
+                  <iframe 
+                    className="absolute inset-0 w-full h-full"
+                    src="https://www.youtube.com/embed/6BRyynZkvf0" 
+                    title="How to Obtain Gemini API Key"
+                    frameBorder="0"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+                    allowFullScreen
+                  ></iframe>
+                )}
               </div>
             </div>
 
