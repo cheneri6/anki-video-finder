@@ -809,6 +809,47 @@ export default function App() {
     }
   };
 
+  const handleAnkiBrowseSection = async (videoNamesList) => {
+    if (!videoNamesList || videoNamesList.length === 0) return;
+    
+    const queries = [];
+    videoNamesList.forEach(videoName => {
+      const category = findCategoryForVideo(videoName);
+      if (category) {
+        const rawKey = Object.keys(RESOURCE_MAP).find(k => RESOURCE_MAP[k] === category) || category;
+        const rawTagKey = rawKey.startsWith('#') ? rawKey : `#${rawKey}`;
+        const tagParts = videoName.split(' > ').map(p => p.trim().replace(/ /g, '_'));
+        queries.push(`(tag:"*::${rawTagKey}::${tagParts.join('::')}*")`);
+      }
+    });
+    
+    if (queries.length === 0) return;
+    const combinedQuery = queries.join(' OR ');
+    
+    try {
+      const response = await fetch('http://127.0.0.1:8765', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'guiBrowse',
+          version: 6,
+          params: {
+            query: combinedQuery
+          }
+        })
+      });
+      
+      const data = await response.json();
+      if (data.error) {
+        alert(`AnkiConnect Error: ${data.error}`);
+      } else {
+        console.log(`Successfully browsed section in Anki: ${combinedQuery}`);
+      }
+    } catch (err) {
+      alert(`Could not connect to desktop Anki. Please make sure desktop Anki is open and the AnkiConnect add-on is installed and configured.`);
+    }
+  };
+
   const renderCardItem = (item, index) => (
     <div key={index} className="p-5 hover:bg-slate-50 transition-colors border-b border-slate-100 last:border-b-0">
       <div 
@@ -1005,9 +1046,19 @@ export default function App() {
                           if (list.length === 0) return null;
                           return (
                             <div key={colorKey} className="space-y-1.5">
-                              <div className="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
-                                <span className={`w-2.5 h-2.5 rounded-full ${colorConfig.dot}`}></span>
-                                <span>{colorConfig.label} ({list.length})</span>
+                              <div className="flex items-center justify-between text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 pr-1">
+                                <div className="flex items-center gap-2">
+                                  <span className={`w-2.5 h-2.5 rounded-full ${colorConfig.dot}`}></span>
+                                  <span>{colorConfig.label} ({list.length})</span>
+                                </div>
+                                <button
+                                  onClick={() => handleAnkiBrowseSection(list)}
+                                  className="text-[9px] lowercase bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 px-1.5 py-0.5 rounded border border-slate-200 transition-all flex items-center gap-1 select-none font-bold"
+                                  title={`Browse all ${colorConfig.label} cards in desktop Anki`}
+                                >
+                                  <Search className="w-2 h-2" />
+                                  <span>Browse all</span>
+                                </button>
                               </div>
                               <div className="space-y-1 pl-4">
                                 {list.map(videoName => {
