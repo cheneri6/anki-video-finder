@@ -850,46 +850,7 @@ export default function App() {
     }
   };
 
-  const handleAnkiBrowseSection = async (videoNamesList) => {
-    if (!videoNamesList || videoNamesList.length === 0) return;
-    
-    const queries = [];
-    videoNamesList.forEach(videoName => {
-      const category = findCategoryForVideo(videoName) || videoCategories[videoName];
-      if (category) {
-        const rawKey = Object.keys(RESOURCE_MAP).find(k => RESOURCE_MAP[k] === category) || category;
-        const rawTagKey = rawKey.startsWith('#') ? rawKey : `#${rawKey}`;
-        const tagParts = videoName.split(' > ').map(p => p.trim().replace(/ /g, '_'));
-        queries.push(`(tag:"*::${rawTagKey}::${tagParts.join('::')}*")`);
-      }
-    });
-    
-    if (queries.length === 0) return;
-    const combinedQuery = queries.join(' OR ');
-    
-    try {
-      const response = await fetch('http://127.0.0.1:8765', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'guiBrowse',
-          version: 6,
-          params: {
-            query: combinedQuery
-          }
-        })
-      });
-      
-      const data = await response.json();
-      if (data.error) {
-        alert(`AnkiConnect Error: ${data.error}`);
-      } else {
-        console.log(`Successfully browsed section in Anki: ${combinedQuery}`);
-      }
-    } catch (err) {
-      alert(`Could not connect to desktop Anki. Please make sure desktop Anki is open and the AnkiConnect add-on is installed and configured.`);
-    }
-  };
+
 
   const renderCardItem = (item, index) => (
     <div key={index} className="p-5 hover:bg-slate-50 transition-colors border-b border-slate-100 last:border-b-0">
@@ -1092,38 +1053,26 @@ export default function App() {
                                   <span className={`w-2.5 h-2.5 rounded-full ${colorConfig.dot}`}></span>
                                   <span>{colorConfig.label} ({list.length})</span>
                                 </div>
-                                <button
-                                  onClick={() => handleAnkiBrowseSection(list)}
-                                  className="text-[9px] lowercase bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 px-1.5 py-0.5 rounded border border-slate-200 transition-all flex items-center gap-1 select-none font-bold"
-                                  title={`Browse all ${colorConfig.label} cards in desktop Anki`}
-                                >
-                                  <Search className="w-2 h-2" />
-                                  <span>Browse all</span>
-                                </button>
                               </div>
                               <div className="space-y-1 pl-4">
                                 {list.map(videoName => {
-                                  const isFiltered = selectedVideoFilters.includes(videoName);
                                   const videoCategory = findCategoryForVideo(videoName) || videoCategories[videoName];
                                   return (
                                     <div key={videoName} className="flex items-center justify-between gap-3 text-xs p-1.5 rounded hover:bg-slate-50 border border-transparent transition-colors">
                                       <button
-                                        onClick={() => handleToggleVideoFilter(videoName)}
-                                        className={`text-left hover:underline select-none truncate max-w-[200px] ${isFiltered ? 'font-bold text-indigo-600' : 'text-slate-700'}`}
-                                        title={isFiltered ? "Click to remove filter" : "Click to filter cards by this video"}
+                                        onClick={() => {
+                                          if (videoCategory) {
+                                            handleAnkiBrowse(videoCategory, videoName);
+                                          } else {
+                                            alert("Resource category not resolved yet for this video. Run a search to auto-resolve it.");
+                                          }
+                                        }}
+                                        className="text-left hover:underline select-none truncate max-w-[220px] text-slate-700 hover:text-indigo-600 font-medium"
+                                        title={videoCategory ? "Click to browse cards in desktop Anki" : "Category not resolved. Run a search first."}
                                       >
                                         {videoName}
                                       </button>
                                       <div className="flex items-center gap-1.5 shrink-0">
-                                        {videoCategory && (
-                                          <button
-                                            onClick={() => handleAnkiBrowse(videoCategory, videoName)}
-                                            className="p-0.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
-                                            title="Open in desktop Anki Browse"
-                                          >
-                                            <Search className="w-3.5 h-3.5" />
-                                          </button>
-                                        )}
                                         {/* Color change dots */}
                                         {Object.entries(VIDEO_COLORS).map(([key, config]) => (
                                           <button
