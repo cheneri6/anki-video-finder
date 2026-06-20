@@ -776,9 +776,12 @@ export default function App() {
     // Find raw key mapping
     const rawKey = Object.keys(RESOURCE_MAP).find(k => RESOURCE_MAP[k] === category) || category;
     
+    // Prepend '#' to rawKey if it's not already there (e.g. 'B&B' -> '#B&B')
+    const rawTagKey = rawKey.startsWith('#') ? rawKey : `#${rawKey}`;
+    
     // Convert video name back to tag hierarchy
     const tagParts = videoName.split(' > ').map(p => p.trim().replace(/ /g, '_'));
-    const tagQuery = `tag:"*::${rawKey}::${tagParts.join('::')}*"`;
+    const tagQuery = `tag:"*::${rawTagKey}::${tagParts.join('::')}*"`;
     
     try {
       const response = await fetch('http://127.0.0.1:8765', {
