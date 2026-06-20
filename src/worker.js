@@ -139,6 +139,7 @@ self.onmessage = function(e) {
       // Dynamic scanning collectors
       let discoveredStep1Resources = new Set();
       let discoveredStep2Resources = new Set();
+      let videoToCategoryMap = {};
       
       for (let i = 0; i < rows.length; i++) {
         const r = rows[i];
@@ -151,26 +152,32 @@ self.onmessage = function(e) {
           tags = r[r.length - 1] || ''; 
         }
 
-        // Parse individual tags to build dynamic list of resources available
+        // Parse individual tags to build dynamic list of resources and map videos to categories
         const tagList = tags.split(' ');
         tagList.forEach(t => {
           if (!t) return;
           const parts = t.split('::');
           
-          const step1Idx = parts.findIndex(p => p.toLowerCase().includes('step1'));
-          if (step1Idx !== -1 && step1Idx + 1 < parts.length) {
-            let res = parts[step1Idx + 1].replace(/^#/, '');
-            if (res && !res.startsWith('^') && !res.startsWith('!') && res !== 'Subjects') {
-              discoveredStep1Resources.add(cleanResourceName(res));
-            }
+          const stepIdx = parts.findIndex(p => p.toLowerCase().includes('step1') || p.toLowerCase().includes('step2'));
+          if (stepIdx === -1 || stepIdx + 1 >= parts.length) return;
+          
+          let resRaw = parts[stepIdx + 1].replace(/^#/, '');
+          if (!resRaw || resRaw.startsWith('^') || resRaw.startsWith('!') || resRaw === 'Subjects' || resRaw === 'Resources_by_rotation') {
+            return;
           }
           
-          const step2Idx = parts.findIndex(p => p.toLowerCase().includes('step2'));
-          if (step2Idx !== -1 && step2Idx + 1 < parts.length) {
-            let res = parts[step2Idx + 1].replace(/^#/, '');
-            if (res && !res.startsWith('^') && !res.startsWith('!') && res !== 'Subjects') {
-              discoveredStep2Resources.add(cleanResourceName(res));
-            }
+          const cleanRes = cleanResourceName(resRaw);
+          if (parts[stepIdx].toLowerCase().includes('step1')) {
+            discoveredStep1Resources.add(cleanRes);
+          } else {
+            discoveredStep2Resources.add(cleanRes);
+          }
+          
+          let videoPathParts = parts.slice(stepIdx + 2).map(p => p.replace(/^#/, '').replace(/_/g, ' '));
+          videoPathParts = videoPathParts.filter(p => p && !p.match(/AK Step/i) && !p.match(/AK Other/i) && p.toLowerCase() !== 'extra');
+          const cleanVideo = videoPathParts.join(' > ');
+          if (cleanVideo) {
+            videoToCategoryMap[cleanVideo] = cleanRes;
           }
         });
 
@@ -185,7 +192,8 @@ self.onmessage = function(e) {
         type: 'LOAD_COMPLETE', 
         count: cards.length,
         step1Resources: Array.from(discoveredStep1Resources).sort(),
-        step2Resources: Array.from(discoveredStep2Resources).sort()
+        step2Resources: Array.from(discoveredStep2Resources).sort(),
+        videoToCategoryMap: videoToCategoryMap
       });
     } catch (error) {
       self.postMessage({ type: 'ERROR', payload: error.message });

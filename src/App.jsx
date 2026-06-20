@@ -140,14 +140,7 @@ export default function App() {
       return {};
     }
   });
-  const [videoCategories, setVideoCategories] = useState(() => {
-    try {
-      const saved = localStorage.getItem('anki_video_categories');
-      return saved ? JSON.parse(saved) : {};
-    } catch (e) {
-      return {};
-    }
-  });
+  const [allVideosMap, setAllVideosMap] = useState({});
   const [contextMenu, setContextMenu] = useState(null);
   const [showTrackedDropdown, setShowTrackedDropdown] = useState(false);
   const [showWhatsNew, setShowWhatsNew] = useState(false);
@@ -157,10 +150,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('anki_video_colors', JSON.stringify(videoColors));
   }, [videoColors]);
-
-  useEffect(() => {
-    localStorage.setItem('anki_video_categories', JSON.stringify(videoCategories));
-  }, [videoCategories]);
 
   // Handle click outside to close dropdowns and context menu
   useEffect(() => {
@@ -258,6 +247,7 @@ export default function App() {
           setCardCount(e.data.count);
           setStep1Resources(e.data.step1Resources || []);
           setStep2Resources(e.data.step2Resources || []);
+          setAllVideosMap(e.data.videoToCategoryMap || {});
           setErrorMsg('');
           
           const localPrefs = localStorage.getItem('anki_video_finder_prefs');
@@ -565,32 +555,6 @@ export default function App() {
     return summaries;
   }, [searchMode, syllabusResults, preferences.enabledServices]);
 
-  const updateCategoriesFromResults = (flatCards) => {
-    const newCats = {};
-    let updated = false;
-    flatCards.forEach(item => {
-      Object.entries(item.extractedVideos).forEach(([resourceName, videosList]) => {
-        const normalizedCategory = resourceName === 'B&B' ? 'Boards & Beyond' : 
-                                   resourceName === 'SketchyMicro' ? 'Sketchy Micro' : 
-                                   resourceName === 'SketchyPharm' ? 'Sketchy Pharm' : 
-                                   resourceName === 'SketchyPath' ? 'Sketchy Pathology' : 
-                                   resourceName;
-        
-        if (normalizedCategory === 'Low/High Yield' || normalizedCategory === 'Low/HighYield') return;
-        
-        videosList.forEach(v => {
-          if (videoColors[v] && !videoCategories[v]) {
-            newCats[v] = normalizedCategory;
-            updated = true;
-          }
-        });
-      });
-    });
-    if (updated) {
-      setVideoCategories(prev => ({ ...prev, ...newCats }));
-    }
-  };
-
   const processWorkerResults = (searchResults) => {
     const formattedCards = searchResults.map(item => ({
       ...item.card,
@@ -599,7 +563,6 @@ export default function App() {
     }));
     setResults(formattedCards);
     setSearchStatus('complete');
-    updateCategoriesFromResults(formattedCards);
   };
 
   const processWorkerSyllabusResults = (syllabusResMap) => {
@@ -620,7 +583,6 @@ export default function App() {
     setSyllabusResults(formattedSyllabusMap);
     setResults(flatResults); 
     setSearchStatus('complete');
-    updateCategoriesFromResults(flatResults);
   };
 
   const parseTagsForVideos = (tagsStr, examFocus = 'step1') => {
@@ -802,18 +764,21 @@ export default function App() {
   const clearAllFilters = () => setSelectedVideoFilters([]);
 
   const findCategoryForVideo = useCallback((videoName) => {
-    // Check standard videoSummary first
+    // 1. Check loaded allVideosMap first (this maps videoName -> category directly from the database)
+    if (allVideosMap[videoName]) return allVideosMap[videoName];
+
+    // 2. Check standard videoSummary fallback
     for (const [cat, vids] of Object.entries(videoSummary || {})) {
       if (vids.some(v => v.name === videoName)) return cat;
     }
-    // Check syllabusVideoSummaries
+    // 3. Check syllabusVideoSummaries fallback
     for (const catSummaries of Object.values(syllabusVideoSummaries || {})) {
       for (const [cat, vids] of Object.entries(catSummaries)) {
         if (vids.some(v => v.name === videoName)) return cat;
       }
     }
     return null;
-  }, [videoSummary, syllabusVideoSummaries]);
+  }, [allVideosMap, videoSummary, syllabusVideoSummaries]);
 
   const handleAnkiBrowse = async (category, videoName) => {
     // Find raw key mapping
@@ -1056,7 +1021,7 @@ export default function App() {
                               </div>
                               <div className="space-y-1 pl-4">
                                 {list.map(videoName => {
-                                  const videoCategory = findCategoryForVideo(videoName) || videoCategories[videoName];
+                                  const videoCategory = findCategoryForVideo(videoName);
                                   return (
                                     <div key={videoName} className="flex items-center justify-between gap-3 text-xs p-1.5 rounded hover:bg-slate-50 border border-transparent transition-colors">
                                       <button
@@ -1064,11 +1029,11 @@ export default function App() {
                                           if (videoCategory) {
                                             handleAnkiBrowse(videoCategory, videoName);
                                           } else {
-                                            alert("Resource category not resolved yet for this video. Run a search to auto-resolve it.");
+                                            alert("Resource category not found in the loaded database for this video.");
                                           }
                                         }}
                                         className="text-left hover:underline select-none truncate max-w-[220px] text-slate-700 hover:text-indigo-600 font-medium"
-                                        title={videoCategory ? "Click to browse cards in desktop Anki" : "Category not resolved. Run a search first."}
+                                        title={videoCategory ? "Click to browse cards in desktop Anki" : "Category not resolved."}
                                       >
                                         {videoName}
                                       </button>
@@ -1079,9 +1044,6 @@ export default function App() {
                                             key={key}
                                             onClick={() => {
                                               setVideoColors(prev => ({ ...prev, [videoName]: key }));
-                                              if (videoCategory && !videoCategories[videoName]) {
-                                                setVideoCategories(prev => ({ ...prev, [videoName]: videoCategory }));
-                                              }
                                             }}
                                             className={`w-3 h-3 rounded-full ${config.dot} transition-transform hover:scale-125 border ${key === colorKey ? 'border-slate-800 scale-110' : 'border-transparent'}`}
                                             title={`Move to ${config.label}`}
@@ -1091,11 +1053,6 @@ export default function App() {
                                         <button
                                           onClick={() => {
                                             setVideoColors(prev => {
-                                              const copy = { ...prev };
-                                              delete copy[videoName];
-                                              return copy;
-                                            });
-                                            setVideoCategories(prev => {
                                               const copy = { ...prev };
                                               delete copy[videoName];
                                               return copy;
@@ -1940,9 +1897,6 @@ export default function App() {
               key={key}
               onClick={() => {
                 setVideoColors(prev => ({ ...prev, [contextMenu.videoName]: key }));
-                if (contextMenu.category) {
-                  setVideoCategories(prev => ({ ...prev, [contextMenu.videoName]: contextMenu.category }));
-                }
                 setContextMenu(null);
               }}
               className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 flex items-center gap-2 text-slate-700 transition-colors"
@@ -1955,11 +1909,6 @@ export default function App() {
             <button
               onClick={() => {
                 setVideoColors(prev => {
-                  const copy = { ...prev };
-                  delete copy[contextMenu.videoName];
-                  return copy;
-                });
-                setVideoCategories(prev => {
                   const copy = { ...prev };
                   delete copy[contextMenu.videoName];
                   return copy;
