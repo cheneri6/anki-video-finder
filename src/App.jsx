@@ -143,6 +143,8 @@ export default function App() {
   const [allVideosMap, setAllVideosMap] = useState({});
   const [contextMenu, setContextMenu] = useState(null);
   const [showTrackedDropdown, setShowTrackedDropdown] = useState(false);
+  const [trackedSearchQuery, setTrackedSearchQuery] = useState('');
+  const [collapsedSections, setCollapsedSections] = useState({});
   const [showWhatsNew, setShowWhatsNew] = useState(false);
   const [showAnkiConnectGuide, setShowAnkiConnectGuide] = useState(false);
   const [activeTutorialTab, setActiveTutorialTab] = useState('app');
@@ -158,6 +160,7 @@ export default function App() {
       const headerControls = document.getElementById('header-controls');
       if (headerControls && !headerControls.contains(e.target)) {
         setShowTrackedDropdown(false);
+        setTrackedSearchQuery('');
         setShowWhatsNew(false);
       }
     };
@@ -940,6 +943,9 @@ export default function App() {
                 onClick={() => {
                   setShowWhatsNew(false);
                   setShowTrackedDropdown(!showTrackedDropdown);
+                  if (showTrackedDropdown) {
+                    setTrackedSearchQuery('');
+                  }
                 }}
                 className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 py-1.5 px-3 rounded-lg border border-slate-200 font-medium text-sm transition-all shadow-sm relative"
               >
@@ -981,10 +987,14 @@ export default function App() {
               {showTrackedDropdown && (() => {
                 const colorGroups = { blue: [], yellow: [], purple: [], rose: [], green: [] };
                 Object.entries(videoColors).forEach(([name, color]) => {
-                  if (colorGroups[color]) {
-                    colorGroups[color].push(name);
+                  if (trackedSearchQuery.trim() === '' || name.toLowerCase().includes(trackedSearchQuery.toLowerCase())) {
+                    if (colorGroups[color]) {
+                      colorGroups[color].push(name);
+                    }
                   }
                 });
+
+                const allFilteredVids = Object.values(colorGroups).flat();
 
                 return (
                   <div className="absolute top-12 right-24 w-96 bg-white border border-slate-200 rounded-xl shadow-xl z-50 p-4 animate-fade-in text-slate-800">
@@ -994,80 +1004,123 @@ export default function App() {
                         Tracked Videos Manager
                       </h3>
                       <button 
-                        onClick={() => setShowTrackedDropdown(false)}
+                        onClick={() => {
+                          setShowTrackedDropdown(false);
+                          setTrackedSearchQuery('');
+                        }}
                         className="p-1 text-slate-400 hover:text-slate-600 rounded"
                       >
                         <X className="w-4 h-4" />
                       </button>
                     </div>
 
+                    {Object.keys(videoColors).length > 0 && (
+                      <div className="relative mb-3">
+                        <input
+                          type="text"
+                          placeholder="Search tracked videos..."
+                          value={trackedSearchQuery}
+                          onChange={(e) => setTrackedSearchQuery(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:ring-2 focus:ring-indigo-500 focus:bg-white outline-none text-slate-700"
+                        />
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2" />
+                        {trackedSearchQuery && (
+                          <button 
+                            onClick={() => setTrackedSearchQuery('')}
+                            className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    )}
+
                     {Object.keys(videoColors).length === 0 ? (
                       <div className="py-8 text-center text-slate-400 text-xs leading-relaxed">
                         <p className="font-semibold mb-1">No tracked videos yet</p>
                         <p>Right-click any video in the recommended list below to assign a color-coded status.</p>
                       </div>
+                    ) : allFilteredVids.length === 0 ? (
+                      <div className="py-8 text-center text-slate-400 text-xs leading-relaxed">
+                        <p className="font-semibold mb-1">No matching tracked videos</p>
+                        <p>Try searching for a different term or clear the search bar.</p>
+                      </div>
                     ) : (
-                      <div className="space-y-4 max-h-[350px] overflow-y-auto pr-1">
+                      <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
                         {Object.entries(VIDEO_COLORS).map(([colorKey, colorConfig]) => {
                           const list = colorGroups[colorKey] || [];
                           if (list.length === 0) return null;
+                          const isCollapsed = collapsedSections[colorKey] === true;
                           return (
-                            <div key={colorKey} className="space-y-1.5">
-                              <div className="flex items-center justify-between text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 pr-1">
+                            <div key={colorKey} className="space-y-1.5 border border-slate-100 rounded-lg p-2 bg-slate-50/20">
+                              <button
+                                onClick={() => {
+                                  setCollapsedSections(prev => ({ ...prev, [colorKey]: !prev[colorKey] }));
+                                }}
+                                className="w-full flex items-center justify-between text-xs font-bold text-slate-500 uppercase tracking-wider hover:text-indigo-600 transition-colors focus:outline-none select-none"
+                              >
                                 <div className="flex items-center gap-2">
                                   <span className={`w-2.5 h-2.5 rounded-full ${colorConfig.dot}`}></span>
                                   <span>{colorConfig.label} ({list.length})</span>
                                 </div>
-                              </div>
-                              <div className="space-y-1 pl-4">
-                                {list.map(videoName => {
-                                  const videoCategory = findCategoryForVideo(videoName);
-                                  return (
-                                    <div key={videoName} className="flex items-center justify-between gap-3 text-xs p-1.5 rounded hover:bg-slate-50 border border-transparent transition-colors">
-                                      <button
-                                        onClick={() => {
-                                          if (videoCategory) {
-                                            handleAnkiBrowse(videoCategory, videoName);
-                                          } else {
-                                            alert("Resource category not found in the loaded database for this video.");
-                                          }
-                                        }}
-                                        className="text-left hover:underline select-none truncate max-w-[220px] text-slate-700 hover:text-indigo-600 font-medium"
-                                        title={videoCategory ? "Click to browse cards in desktop Anki" : "Category not resolved."}
-                                      >
-                                        {videoName}
-                                      </button>
-                                      <div className="flex items-center gap-1.5 shrink-0">
-                                        {/* Color change dots */}
-                                        {Object.entries(VIDEO_COLORS).map(([key, config]) => (
-                                          <button
-                                            key={key}
-                                            onClick={() => {
-                                              setVideoColors(prev => ({ ...prev, [videoName]: key }));
-                                            }}
-                                            className={`w-3 h-3 rounded-full ${config.dot} transition-transform hover:scale-125 border ${key === colorKey ? 'border-slate-800 scale-110' : 'border-transparent'}`}
-                                            title={`Move to ${config.label}`}
-                                          />
-                                        ))}
-                                        {/* Clear button */}
+                                {isCollapsed ? (
+                                  <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                                ) : (
+                                  <ChevronUp className="w-3.5 h-3.5 text-slate-400" />
+                                )}
+                              </button>
+                              
+                              {!isCollapsed && (
+                                <div className="space-y-1 pl-4 animate-fade-in">
+                                  {list.map(videoName => {
+                                    const videoCategory = findCategoryForVideo(videoName);
+                                    return (
+                                      <div key={videoName} className="flex items-center justify-between gap-3 text-xs p-1.5 rounded hover:bg-slate-50 border border-transparent transition-colors">
                                         <button
                                           onClick={() => {
-                                            setVideoColors(prev => {
-                                              const copy = { ...prev };
-                                              delete copy[videoName];
-                                              return copy;
-                                            });
+                                            if (videoCategory) {
+                                              handleAnkiBrowse(videoCategory, videoName);
+                                            } else {
+                                              alert("Resource category not found in the loaded database for this video.");
+                                            }
                                           }}
-                                          className="p-0.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
-                                          title="Remove status tracking"
+                                          className="text-left hover:underline select-none truncate max-w-[220px] text-slate-700 hover:text-indigo-600 font-medium"
+                                          title={videoCategory ? "Click to browse cards in desktop Anki" : "Category not resolved."}
                                         >
-                                          <Trash2 className="w-3.5 h-3.5" />
+                                          {videoName}
                                         </button>
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                          {/* Color change dots */}
+                                          {Object.entries(VIDEO_COLORS).map(([key, config]) => (
+                                            <button
+                                              key={key}
+                                              onClick={() => {
+                                                setVideoColors(prev => ({ ...prev, [videoName]: key }));
+                                              }}
+                                              className={`w-3 h-3 rounded-full ${config.dot} transition-transform hover:scale-125 border ${key === colorKey ? 'border-slate-800 scale-110' : 'border-transparent'}`}
+                                              title={`Move to ${config.label}`}
+                                            />
+                                          ))}
+                                          {/* Clear button */}
+                                          <button
+                                            onClick={() => {
+                                              setVideoColors(prev => {
+                                                const copy = { ...prev };
+                                                delete copy[videoName];
+                                                return copy;
+                                              });
+                                            }}
+                                            className="p-0.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                                            title="Remove status tracking"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
                                       </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
                           );
                         })}
