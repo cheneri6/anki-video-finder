@@ -305,7 +305,7 @@ self.onmessage = function(e) {
                   } else {
                     if (searchPool.includes(term)) {
                       groupMatched = true;
-                      score += term.length;
+                      score += Math.max(10, term.length);
                       break;
                     }
                   }
@@ -336,7 +336,7 @@ self.onmessage = function(e) {
           if (b.matchCount !== a.matchCount) return b.matchCount - a.matchCount;
           return b.score - a.score;
         });
-        syllabusResults[cat.name] = sortedMatches.slice(0, 40);
+        syllabusResults[cat.name] = sortedMatches.slice(0, 100);
       });
 
       self.postMessage({ type: 'SEARCH_SYLLABUS_COMPLETE', results: syllabusResults });
