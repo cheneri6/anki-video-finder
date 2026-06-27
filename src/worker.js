@@ -286,6 +286,7 @@ self.onmessage = function(e) {
               if (userPreferences.examFocus === 'step1' && !hasStep1Tag && hasStep2Tag) continue;
               if (userPreferences.examFocus === 'step2' && !hasStep2Tag && hasStep1Tag) continue;
 
+              let score = 0;
               let matchCount = 0;
               const searchPool = (c.text + " " + c.extra).toLowerCase();
               let firstGroupMatched = false;
@@ -298,11 +299,13 @@ self.onmessage = function(e) {
                   if (term.length <= 4) {
                     if (includesWholeWord(searchPool, term)) {
                       groupMatched = true;
+                      score += 10;
                       break;
                     }
                   } else {
                     if (searchPool.includes(term)) {
                       groupMatched = true;
+                      score += term.length;
                       break;
                     }
                   }
@@ -321,14 +324,19 @@ self.onmessage = function(e) {
               }
 
               if (isMatch) {
-                 if (!catMatches.has(c.text)) {
-                    catMatches.set(c.text, { card: c, score: 1 });
+                 const existing = catMatches.get(c.text);
+                 if (!existing || matchCount > existing.matchCount || (matchCount === existing.matchCount && score > existing.score)) {
+                    catMatches.set(c.text, { card: c, score, matchCount });
                  }
               }
            }
         });
 
-        syllabusResults[cat.name] = Array.from(catMatches.values()).slice(0, 40);
+        const sortedMatches = Array.from(catMatches.values()).sort((a, b) => {
+          if (b.matchCount !== a.matchCount) return b.matchCount - a.matchCount;
+          return b.score - a.score;
+        });
+        syllabusResults[cat.name] = sortedMatches.slice(0, 40);
       });
 
       self.postMessage({ type: 'SEARCH_SYLLABUS_COMPLETE', results: syllabusResults });
