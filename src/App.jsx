@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   Search, Video, BookOpen, Layers, 
   CheckCircle, Loader2, PlayCircle,
   Sparkles, BrainCircuit, MessageSquare, X, AlignLeft, Trash2,
-  ChevronDown, ChevronUp, Settings, Sliders, Key, HelpCircle, Filter, CheckSquare, Square
+  ChevronDown, ChevronUp, Settings, Sliders, Key, HelpCircle, Filter
 } from 'lucide-react';
 import SearchWorker from './worker.js?worker';
 import RESOURCE_MAP from './resourceMap.js';
@@ -136,7 +136,7 @@ export default function App() {
     try {
       const saved = localStorage.getItem('anki_video_colors');
       return saved ? JSON.parse(saved) : {};
-    } catch (e) {
+    } catch {
       return {};
     }
   });
@@ -331,7 +331,7 @@ export default function App() {
       if (worker) {
         worker.postMessage({ type: 'LOAD_CSV', payload: text });
       }
-    } catch (err) {
+    } catch {
       setCsvStatus('error');
       setErrorMsg('Remote Deck Fetch Failed. Verify connection configuration.');
     }
@@ -403,7 +403,7 @@ export default function App() {
           try {
             const errData = await res.json();
             errorDetail = errData.error?.message || `Status ${res.status}`;
-          } catch (_) {
+          } catch {
             errorDetail = `Status ${res.status}`;
           }
           throw new Error(errorDetail);
@@ -813,7 +813,7 @@ export default function App() {
       } else {
         console.log(`Successfully browsed in Anki: ${tagQuery}`);
       }
-    } catch (err) {
+    } catch {
       alert(`Could not connect to desktop Anki. Please make sure desktop Anki is open and the AnkiConnect add-on is installed and configured.`);
     }
   };

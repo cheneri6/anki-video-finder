@@ -37,7 +37,7 @@ export default async function handler(req, res) {
     const csvData = await response.text();
     res.setHeader("Content-Type", "text/csv");
     res.status(200).send(csvData);
-  } catch (error) {
+  } catch {
     res.status(500).json({ error: "Internal server error." });
   }
 }
